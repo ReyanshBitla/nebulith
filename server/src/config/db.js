@@ -1,14 +1,13 @@
-
 const mongoose = require('mongoose');
 
-const connectDB = async () => {
+const connectDB = async (uri) => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
-
-    console.log('MongoDB connected successfully!');
-  } catch (error) {
-    console.error('MongoDB connection failed:', error.message);
-    process.exit(1);
+    await mongoose.connect(uri);
+    console.log('MongoDB connected successfully.');
+  } catch {
+    // Never log the original driver error: it can contain host or credential details.
+    console.error('MongoDB connection failed. Check database availability and configuration.');
+    throw new Error('MongoDB connection failed.');
   }
 };
 

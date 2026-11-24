@@ -1,33 +1,71 @@
-
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
 
 const connectDB = require('./config/db');
+const { loadEnvConfig } = require('./config/env');
+const errorHandler = require('./middleware/error-handler');
+const notFound = require('./middleware/not-found');
+const healthRoutes = require('./routes/health.routes');
 
-const app = express();
+const createApp = (config = loadEnvConfig()) => {
+  const app = express();
+  app.locals.nodeEnv = config.nodeEnv;
+  const allowedOrigins = new Set();
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+  if (config.frontendUrl) {
+    allowedOrigins.add(config.frontendUrl.replace(/\/$/, ''));
+  }
 
-// Test route
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Welcome to NEBULITH API!',
-    status: 'Server is running'
+  if (config.nodeEnv === 'development') {
+    allowedOrigins.add('http://localhost:5173');
+    allowedOrigins.add('http://127.0.0.1:5173');
+  }
+
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) {
+        return callback(null, true);
+      }
+
+      const error = new Error('Origin is not allowed by CORS.');
+      error.status = 403;
+      return callback(error);
+    },
+  }));
+  app.use(express.json());
+
+  app.get('/', (req, res) => {
+    res.json({
+      success: true,
+      application: 'NEBULITH',
+      message: 'Welcome to NEBULITH API!',
+      status: 'running',
+    });
   });
-});
 
-// Start server after connecting to MongoDB
-const PORT = process.env.PORT || 5000;
+  app.use('/api/health', healthRoutes);
+  app.use(notFound);
+  app.use(errorHandler);
+
+  return app;
+};
 
 const startServer = async () => {
-  await connectDB();
+  const config = loadEnvConfig();
+  await connectDB(config.mongodbUri);
 
-  app.listen(PORT, () => {
-    console.log(`NEBULITH server running on port ${PORT}`);
+  const app = createApp(config);
+  return app.listen(config.port, () => {
+    console.log(`NEBULITH server listening on port ${config.port}.`);
   });
 };
 
-startServer();
+if (require.main === module) {
+  startServer().catch((error) => {
+    // Configuration and connection errors are deliberately sanitized before logging.
+    console.error(`NEBULITH startup failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { createApp, startServer };
