@@ -30,6 +30,9 @@ const errorHandler = (err, req, res, next) => {
   if (statusCode >= 500) {
     console.error(`Request failed with status ${statusCode}.`);
   }
+  if (statusCode === 429 && Number.isSafeInteger(err.retryAfter) && err.retryAfter >= 0) {
+    res.set('Retry-After', String(err.retryAfter));
+  }
 
   return res.status(statusCode).json({
     success: false,

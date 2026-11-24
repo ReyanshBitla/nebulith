@@ -6,6 +6,7 @@ const { loadEnvConfig } = require('./config/env');
 const errorHandler = require('./middleware/error-handler');
 const notFound = require('./middleware/not-found');
 const createAuthRouter = require('./routes/auth.routes');
+const createGithubRouter = require('./routes/github.routes');
 const healthRoutes = require('./routes/health.routes');
 
 const createApp = (config = loadEnvConfig(), authDependencies = {}) => {
@@ -48,6 +49,10 @@ const createApp = (config = loadEnvConfig(), authDependencies = {}) => {
   app.use('/api/auth', createAuthRouter({
     jwtSecret: config.jwtSecret,
     jwtExpiresIn: config.jwtExpiresIn,
+    ...authDependencies,
+  }));
+  app.use('/api/github', createGithubRouter({
+    jwtSecret: config.jwtSecret,
     ...authDependencies,
   }));
   app.use(notFound);
