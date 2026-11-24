@@ -15,6 +15,7 @@ const errorHandler = (err, req, res, next) => {
     401: 'Authentication is required.',
     403: 'Access denied.',
     404: 'Route not found.',
+    409: 'The request conflicts with an existing resource.',
     413: 'Request body is too large.',
     429: 'Too many requests.',
   };

@@ -29,6 +29,8 @@ const withServer = async (app, run) => {
 const makeApp = (nodeEnv = 'test', frontendUrl = null) => createApp({
   nodeEnv,
   frontendUrl,
+  jwtSecret: 'test-secret-with-more-than-32-characters',
+  jwtExpiresIn: '1h',
 });
 
 test('GET /api/health returns the structured healthy response without secrets', async () => {

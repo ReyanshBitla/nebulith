@@ -5,9 +5,10 @@ const connectDB = require('./config/db');
 const { loadEnvConfig } = require('./config/env');
 const errorHandler = require('./middleware/error-handler');
 const notFound = require('./middleware/not-found');
+const createAuthRouter = require('./routes/auth.routes');
 const healthRoutes = require('./routes/health.routes');
 
-const createApp = (config = loadEnvConfig()) => {
+const createApp = (config = loadEnvConfig(), authDependencies = {}) => {
   const app = express();
   app.locals.nodeEnv = config.nodeEnv;
   const allowedOrigins = new Set();
@@ -44,6 +45,11 @@ const createApp = (config = loadEnvConfig()) => {
   });
 
   app.use('/api/health', healthRoutes);
+  app.use('/api/auth', createAuthRouter({
+    jwtSecret: config.jwtSecret,
+    jwtExpiresIn: config.jwtExpiresIn,
+    ...authDependencies,
+  }));
   app.use(notFound);
   app.use(errorHandler);
 

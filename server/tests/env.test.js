@@ -8,6 +8,7 @@ const validEnvironment = {
   NODE_ENV: 'test',
   MONGODB_URI: 'mongodb://127.0.0.1:27017/nebulith_test',
   FRONTEND_URL: 'https://frontend.nebulith.example',
+  JWT_SECRET: 'test-secret-with-more-than-32-characters',
 };
 
 test('valid environment configuration is accepted', () => {
@@ -16,6 +17,8 @@ test('valid environment configuration is accepted', () => {
     nodeEnv: 'test',
     mongodbUri: validEnvironment.MONGODB_URI,
     frontendUrl: validEnvironment.FRONTEND_URL,
+    jwtSecret: validEnvironment.JWT_SECRET,
+    jwtExpiresIn: '1h',
   });
 });
 
@@ -70,6 +73,36 @@ test('invalid FRONTEND_URL values are rejected without echoing them', () => {
         assert.doesNotMatch(error.message, /alert|frontend\.example\/path/);
         return true;
       },
+    );
+  }
+});
+
+test('missing and insufficiently strong JWT secrets are rejected safely', () => {
+  const { JWT_SECRET, ...missingSecret } = validEnvironment;
+  void JWT_SECRET;
+
+  assert.throws(() => loadEnvConfig(missingSecret), /Missing required environment variable: JWT_SECRET/);
+  assert.throws(
+    () => loadEnvConfig({ ...validEnvironment, JWT_SECRET: 'short-private-value' }),
+    (error) => {
+      assert.match(error.message, /at least 32 UTF-8 bytes/);
+      assert.doesNotMatch(error.message, /short-private-value/);
+      return true;
+    },
+  );
+  assert.throws(() => loadEnvConfig({ ...validEnvironment, JWT_SECRET: ' '.repeat(40) }), /at least 32 UTF-8 bytes/);
+  assert.throws(() => loadEnvConfig({ ...validEnvironment, JWT_SECRET: 'a'.repeat(40) }), /at least 32 UTF-8 bytes/);
+});
+
+test('JWT_EXPIRES_IN defaults to 1h and invalid durations are rejected', () => {
+  const { JWT_EXPIRES_IN, ...withoutExpiration } = validEnvironment;
+  void JWT_EXPIRES_IN;
+
+  assert.equal(loadEnvConfig(withoutExpiration).jwtExpiresIn, '1h');
+  for (const jwtExpiresIn of ['', '0h', 'one-hour', '10', '999999999999999999d']) {
+    assert.throws(
+      () => loadEnvConfig({ ...validEnvironment, JWT_EXPIRES_IN: jwtExpiresIn }),
+      /Invalid JWT_EXPIRES_IN/,
     );
   }
 });
