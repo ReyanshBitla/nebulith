@@ -20,6 +20,8 @@ const createGithubRouter = (dependencies = {}) => {
   router.get('/repositories/:owner/:repo/commits', authenticate, controller.listCommits);
   router.get('/repositories/:owner/:repo/commits/:sha', authenticate, controller.commitDetails);
   router.get('/repositories/:owner/:repo/commit-activity', authenticate, controller.commitActivity);
+  router.get('/repositories/:owner/:repo/contributors', authenticate, controller.contributors);
+  router.get('/repositories/:owner/:repo/contributor-activity', authenticate, controller.contributorActivity);
   router.get('/repositories/:owner/:repo/languages', authenticate, controller.repositoryLanguages);
   router.get('/repositories/:owner/:repo', authenticate, controller.repositoryDetails);
   router.delete('/connection', authenticate, controller.disconnect);

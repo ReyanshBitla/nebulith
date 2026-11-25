@@ -6,6 +6,7 @@ const GitHubPendingLink = require('../models/github-pending-link.model');
 const { loadGithubConfig } = require('../config/github');
 const createHttpError = require('../utils/http-error');
 const { mapLanguageBreakdown, aggregateLanguageBreakdowns } = require('../utils/language-intelligence');
+const { mapContributor, mapContributorActivity } = require('../utils/contributor-intelligence');
 const { createGithubAppService } = require('./github-app.service');
 const { requestGithubApi } = require('./github-api.service');
 
@@ -13,6 +14,7 @@ const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const STATE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const REPOSITORY_PART_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const COMMIT_SHA_PATTERN = /^[A-Fa-f\d]{7,64}$/;
+const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
 const getId = (value) => (value && typeof value.toString === 'function' ? value.toString() : String(value));
 
@@ -43,10 +45,16 @@ const mapCommit = (commit) => {
   if (!commit || typeof commit !== 'object' || !COMMIT_SHA_PATTERN.test(commit.sha || '') || !commit.commit) {
     throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid commit response.');
   }
+  const verifiedAuthor = Number.isSafeInteger(commit.author?.id)
+    && commit.author.id > 0
+    && typeof commit.author.login === 'string'
+    && GITHUB_LOGIN_PATTERN.test(commit.author.login);
   return {
     sha: commit.sha,
     message: typeof commit.commit.message === 'string' ? commit.commit.message : null,
     author: commit.author?.login || commit.commit.author?.name || null,
+    authorLogin: verifiedAuthor ? commit.author.login : null,
+    authorVerified: verifiedAuthor,
     date: commit.commit.author?.date || commit.commit.committer?.date || null,
     url: typeof commit.html_url === 'string' ? commit.html_url : null,
   };
@@ -448,6 +456,61 @@ const createGithubService = ({
     });
   };
 
+  const listContributors = async (userId, owner, repositoryName, { page = 1, perPage = 30 } = {}) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const result = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/contributors?anon=1&per_page=${perPage}&page=${page}`,
+        token,
+        fetchImpl,
+        returnResponse: true,
+      });
+      if (result.status === 204) {
+        return { contributors: [], pagination: { page, perPage, hasNext: false } };
+      }
+      if (result.status !== 200 || !Array.isArray(result.data)) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid contributor list.');
+      }
+
+      return {
+        contributors: result.data.map(mapContributor),
+        pagination: {
+          page,
+          perPage,
+          hasNext: /rel="next"/.test(result.headers.get('link') || ''),
+        },
+      };
+    });
+  };
+
+  const getContributorActivity = async (userId, owner, repositoryName) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const result = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/stats/contributors`,
+        token,
+        fetchImpl,
+        returnResponse: true,
+      });
+      if (result.status === 202) {
+        const retryAfter = Number(result.headers.get('retry-after'));
+        return {
+          status: 'computing', weeks: [], contributors: [],
+          ...(Number.isSafeInteger(retryAfter) && retryAfter >= 0 ? { retryAfterSeconds: retryAfter } : {}),
+        };
+      }
+      if (result.status === 204 || (result.status === 200 && Array.isArray(result.data) && result.data.length === 0)) {
+        return { status: 'unavailable', weeks: [], contributors: [] };
+      }
+      if (result.status !== 200 || !Array.isArray(result.data)) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned invalid contributor activity data.');
+      }
+      return mapContributorActivity(result.data);
+    });
+  };
+
   const getRepositoryLanguages = async (userId, owner, repositoryName) => {
     validateRepositoryCoordinates(owner, repositoryName);
     const integration = await getInstallationForUser(userId);
@@ -573,6 +636,8 @@ const createGithubService = ({
     listCommits,
     getCommitDetails,
     getCommitActivity,
+    listContributors,
+    getContributorActivity,
     getRepositoryLanguages,
     getLanguageIntelligence,
     getRepository,

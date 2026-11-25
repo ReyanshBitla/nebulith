@@ -84,6 +84,18 @@ const createGithubController = (githubService) => ({
     data: await githubService.getCommitActivity(getUserId(req), req.params.owner, req.params.repo),
   }),
 
+  contributors: async (req, res) => res.status(200).json({
+    success: true,
+    data: await githubService.listContributors(
+      getUserId(req), req.params.owner, req.params.repo, parsePagination(req.query),
+    ),
+  }),
+
+  contributorActivity: async (req, res) => res.status(200).json({
+    success: true,
+    data: await githubService.getContributorActivity(getUserId(req), req.params.owner, req.params.repo),
+  }),
+
   repositoryLanguages: async (req, res) => res.status(200).json({
     success: true,
     data: await githubService.getRepositoryLanguages(getUserId(req), req.params.owner, req.params.repo),

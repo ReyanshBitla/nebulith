@@ -8,6 +8,7 @@ import { useAuth } from './context/useAuth'
 import { useGithubRepositories } from './context/useGithubRepositories'
 import { useCommitIntelligence } from './context/useCommitIntelligence'
 import { useLanguageIntelligence } from './context/useLanguageIntelligence'
+import { useContributorIntelligence } from './context/useContributorIntelligence'
 import { getSafeAuthError } from './services/auth-errors'
 
 const paths = {
@@ -22,6 +23,7 @@ const paths = {
   chevron: <path d="m9 18 6-6-6-6"/>,
   menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>,
   close: <><path d="m6 6 12 12M18 6 6 18"/></>,
+  user: <><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></>,
   check: <path d="m5 12 4 4L19 6"/>,
   github: <><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 6v-3.9a3.4 3.4 0 0 0-.9-2.6c3-.3 6.1-1.5 6.1-6.7A5.2 5.2 0 0 0 18.8 5a4.8 4.8 0 0 0-.1-3S17.5 1.7 15 3.4a13.2 13.2 0 0 0-7 0C5.5 1.7 4.3 2 4.3 2A4.8 4.8 0 0 0 4.2 5 5.2 5.2 0 0 0 2.8 8.7c0 5.2 3.1 6.4 6.1 6.7A3.4 3.4 0 0 0 8 18v4"/></>,
   lock: <><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></>,
@@ -261,7 +263,7 @@ function PageHeader({ eyebrow, title, detail, action, className = '' }) {
   return <div className={`page-header ${className}`}><div><div className="page-eyebrow">{eyebrow}</div><h1>{title}</h1>{detail&&<p>{detail}</p>}</div>{action}</div>
 }
 
-function Overview({ navigate, openRepo, user, repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedCommitRepository, onSelectCommitRepository, commitIntelligence, languageIntelligence }) {
+function Overview({ navigate, openRepo, user, repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedCommitRepository, onSelectCommitRepository, commitIntelligence, languageIntelligence, contributorIntelligence }) {
   const firstName = user?.name?.trim().split(/\s+/)[0] || user?.email || 'there'
   const stats = useMemo(() => liveRepositories.reduce((total, repo) => ({
     total: total.total + 1,
@@ -295,10 +297,11 @@ function Overview({ navigate, openRepo, user, repositories: liveRepositories, re
     <div className="stat-grid repository-stat-grid"><StatCard label="Repositories" value={statValue(stats.total)} delta={statNote} icon="repo" tone="cyan"/><StatCard label="Public" value={statValue(stats.public)} delta="Live GitHub data" icon="globe" tone="green"/><StatCard label="Private" value={statValue(stats.private)} delta="Live GitHub data" icon="lock" tone="violet"/><StatCard label="Stars" value={statValue(stats.stars)} delta="Live GitHub data" icon="spark" tone="amber"/><StatCard label="Forks" value={statValue(stats.forks)} delta="Live GitHub data" icon="repo" tone="cyan"/></div>
     <div className="dashboard-grid overview-pulse-grid"><section className="panel activity-panel"><div className="panel-heading"><div><h2>Engineering pulse</h2><p>Contribution activity · sample data</p></div><select aria-label="Activity time range" defaultValue="7 days"><option>7 days</option><option>30 days</option><option>90 days</option></select></div><ActivityChart compact/></section></div>
     <LanguageIntelligencePanel intelligence={languageIntelligence}/>
-    <div className="dashboard-grid overview-lower-grid"><section className="panel repositories-panel"><div className="panel-heading"><div><h2>Your repositories</h2><p>{repositoryStatus === 'success' ? 'Live GitHub App data · select a repository for details.' : 'Live GitHub App repositories'}</p></div><button className="panel-link" onClick={() => navigate('repositories')}>All repositories <Icon name="arrow" size={14}/></button></div>{repositoryStatus === 'success' && liveRepositories.length > 0 ? <div className="overview-repo-grid">{liveRepositories.slice(0,4).map((repo)=><OverviewRepoCard key={repo.id} repo={repo} openRepo={openRepo}/>)}</div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section><section className="panel activity-feed"><div className="panel-heading"><div><h2>Recent activity</h2><p>Sample workspace timeline</p></div><span className="prototype-label">SAMPLE</span></div><ActivityItem tone="violet" title="Review requested" detail="Sample event · PR #117" time="18m"/><ActivityItem tone="cyan" title="Repository indexed" detail="Sample event · repository" time="1h"/><ActivityItem tone="green" title="Pull request merged" detail="Sample event · PR #61" time="3h"/><ActivityItem tone="amber" title="Health score improved" detail="Sample event" time="Yesterday"/></section></div>
+    <div className="dashboard-grid overview-lower-grid"><section className="panel repositories-panel"><div className="panel-heading"><div><h2>Your repositories</h2><p>{repositoryStatus === 'success' ? 'Live GitHub App data · select a repository for details.' : 'Live GitHub App repositories'}</p></div><button className="panel-link" onClick={() => navigate('repositories')}>All repositories <Icon name="arrow" size={14}/></button></div>{repositoryStatus === 'success' && liveRepositories.length > 0 ? <div className="overview-repo-grid">{liveRepositories.slice(0,4).map((repo)=><OverviewRepoCard key={repo.id} repo={repo} openRepo={openRepo}/>)}</div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section><RecentRepositoryActivity intelligence={commitIntelligence} repositoryName={selectedCommitRepository?.fullName}/></div>
     <CommitIntelligencePanel repositories={liveRepositories} repositoryStatus={repositoryStatus} repositoryError={repositoryError} retryRepositories={retryRepositories} selectedRepository={selectedCommitRepository} onSelectRepository={onSelectCommitRepository} intelligence={commitIntelligence}/>
+    <ContributorIntelligencePanel repositories={liveRepositories} repositoryStatus={repositoryStatus} selectedRepository={selectedCommitRepository} onSelectRepository={onSelectCommitRepository} intelligence={contributorIntelligence} commitIntelligence={commitIntelligence}/>
     <div className="dashboard-grid overview-insights-grid"><section className="panel code-summary-panel"><div className="panel-heading"><div><h2>Code review overview</h2><p>Sample pull request signals</p></div><button className="panel-link" onClick={() => navigate('code-reviews')}>Review queue <Icon name="arrow" size={14}/></button></div><div className="review-summary-meter"><div className="review-summary-ring"><strong>08</strong><span>OPEN</span></div><div className="review-summary-copy"><b>Moving at a healthy pace</b><span>3 ready · 3 in review · 2 need attention</span><div className="review-summary-bar"><i/></div></div></div><div className="review-summary-list"><span><i className="review-dot violet"/> In review <b>03</b></span><span><i className="review-dot green"/> Ready to merge <b>03</b></span><span><i className="review-dot amber"/> Needs attention <b>02</b></span></div></section><section className="panel productivity-panel"><div className="productivity-heading"><span className="productivity-icon"><Icon name="bolt" size={18}/></span><span className="section-index">TEAM MOMENTUM · SAMPLE</span></div><p>A little less waiting.<br/><strong>A little more making.</strong></p><div className="productivity-metrics"><div><span>AVG. REVIEW TIME</span><b>4.2h</b></div><div><span>WEEKLY MOMENTUM</span><b>+18%</b></div></div><div className="productivity-sparkline" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div></section></div>
-    <div className="demo-disclaimer"><Icon name="spark" size={14}/> Repository counts, visibility, stars, forks, commit history and language bytes above come from GitHub. Review, productivity, contribution activity and recent event panels remain sample data.</div>
+    <div className="demo-disclaimer"><Icon name="spark" size={14}/> Repository metadata, commit history, contributor accounts, weekly contributor activity and language analytics above use live GitHub data. Engineering pulse, code review and productivity previews remain sample data.</div>
   </>
 }
 
@@ -360,6 +363,90 @@ function formatCommitDate(value, options = { dateStyle: 'medium', timeStyle: 'sh
 
 function CommitIntelligencePanel({ repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedRepository, onSelectRepository, intelligence }) {
   return <section className="panel commit-intelligence-panel"><div className="commit-panel-heading"><div><span className="section-index">REPOSITORY INTELLIGENCE</span><h2>Commit intelligence</h2><p>Explore real commit history and GitHub’s weekly activity for one repository.</p></div>{liveRepositories.length > 0&&<label className="commit-repository-picker"><span>Repository</span><select value={selectedRepository ? String(selectedRepository.id) : ''} onChange={(event)=>onSelectRepository(liveRepositories.find((repo)=>String(repo.id)===event.target.value)?.id)} aria-label="Choose repository for commit intelligence">{liveRepositories.map((repo)=><option value={String(repo.id)} key={repo.id}>{repo.fullName}</option>)}</select></label>}</div>{selectedRepository ? <div className="commit-intelligence-columns"><CommitActivityChart intelligence={intelligence} repositoryName={selectedRepository.fullName}/><CommitHistory intelligence={intelligence} repositoryName={selectedRepository.fullName} compact/></div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section>
+}
+
+function getContributorErrorMessage(error) {
+  if (error?.code === 'GITHUB_RATE_LIMITED') return Number.isSafeInteger(error.retryAfter)
+    ? `GitHub rate limit reached. Retry in about ${error.retryAfter} seconds.`
+    : 'GitHub rate limit reached. Wait briefly, then retry.'
+  if (error?.code === 'GITHUB_NOT_CONNECTED') return 'Connect a GitHub App installation to load contributor intelligence.'
+  if (error?.status === 0) return 'NEBULITH could not reach the server. Check your connection and retry.'
+  return error?.message || 'Contributor data could not be loaded. Try again.'
+}
+
+function formatContributorDate(value) {
+  if (!Number.isSafeInteger(value)) return 'Week unavailable'
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(value * 1000))
+}
+
+function ContributorIntelligencePanel({ repositories: liveRepositories, repositoryStatus, selectedRepository, onSelectRepository, intelligence, commitIntelligence }) {
+  const [expandedContributor, setExpandedContributor] = useState(null)
+  const contributors = intelligence.contributors
+  const totalContributions = contributors.reduce((total, contributor) => total + contributor.contributions, 0)
+  const verifiedCount = contributors.filter((contributor) => contributor.verified).length
+  const anonymousCount = contributors.length - verifiedCount
+  const allPagesLoaded = !intelligence.hasNext
+
+  return <section className="panel contributor-intelligence-panel"><div className="contributor-panel-heading"><div><span className="section-index">REPOSITORY INTELLIGENCE</span><h2>Contributor intelligence</h2><p>GitHub-linked commit contributions and weekly repository participation.</p></div>{liveRepositories.length > 0&&<label className="contributor-repository-picker"><span>Repository</span><select value={selectedRepository ? String(selectedRepository.id) : ''} onChange={(event)=>onSelectRepository(liveRepositories.find((repo)=>String(repo.id)===event.target.value)?.id)} aria-label="Choose repository for contributor intelligence">{liveRepositories.map((repo)=><option value={String(repo.id)} key={repo.id}>{repo.fullName}</option>)}</select></label>}</div>
+    {!selectedRepository&&<div className="contributor-feedback"><b>{repositoryStatus==='loading'?'Loading connected repositories':repositoryStatus==='error'?'Repositories are unavailable':'No repositories to analyze'}</b><p>{repositoryStatus==='error'?'Restore GitHub repository access to load contributors.':'Contributor intelligence requires a repository connected through the GitHub App.'}</p></div>}
+    {selectedRepository&&<>
+      <div className="contributor-caveat"><Icon name="clock" size={14}/><span>GitHub caches contributor attribution, so counts may lag by a few hours. Only the first 500 author email addresses may map to GitHub accounts; other records remain anonymous. Commit counts do not measure developer effort.</span></div>
+      {intelligence.contributorsStatus==='loading'&&<div className="contributor-list-skeleton" role="status" aria-label="Loading contributors"><i/><i/><i/><i/><i/></div>}
+      {intelligence.contributorsStatus==='error'&&<div className="contributor-feedback" role="alert"><b>Contributors could not be loaded</b><p>{getContributorErrorMessage(intelligence.contributorsError)}</p><Button kind="secondary" onClick={intelligence.retryContributors}>Retry contributors</Button></div>}
+      {intelligence.contributorsStatus==='success'&&contributors.length===0&&<div className="contributor-feedback"><b>No contributors were returned</b><p>GitHub reported no contributor records for {selectedRepository.fullName}.</p></div>}
+      {intelligence.contributorsStatus==='success'&&contributors.length>0&&<>
+        <div className="contributor-summary"><div><span>VERIFIED ACCOUNTS{intelligence.hasNext?' · LOADED':''}</span><b>{verifiedCount.toLocaleString()}{intelligence.hasNext?'+':''}</b></div><div><span>ANONYMOUS RECORDS{intelligence.hasNext?' · LOADED':''}</span><b>{anonymousCount.toLocaleString()}{intelligence.hasNext?'+':''}</b></div><div><span>CONTRIBUTIONS LOADED</span><b>{totalContributions.toLocaleString()}</b></div></div>
+        <div className="contributor-content-grid"><section className="contributor-ranking-block"><div className="contributor-subheading"><div><h3>Top contributors</h3><span>{selectedRepository.fullName} · ranked by GitHub contribution count</span></div><span className="contributor-live-badge"><i/> LIVE</span></div><div className="contributor-list">{contributors.map((contributor,index)=>{
+          const contributorKey=contributor.verified?`user:${contributor.id}`:`anonymous:${index}`
+          const expanded=expandedContributor===contributorKey
+          const share=allPagesLoaded&&totalContributions>0?contributor.contributions/totalContributions*100:null
+          const activity=intelligence.activityContributors.find((item)=>item.id===contributor.id)
+          const profileUrl=contributor.verified?getSafeGithubUrl(contributor.profileUrl):null
+          return <article className={`contributor-entry ${expanded?'is-expanded':''}`} key={contributorKey}><div className="contributor-entry-main"><span className="contributor-rank">{String(index+1).padStart(2,'0')}</span><button className="contributor-toggle" onClick={()=>setExpandedContributor(expanded?null:contributorKey)} aria-expanded={expanded}><span className="contributor-avatar">{contributor.verified&&contributor.avatarUrl?<img src={contributor.avatarUrl} alt="" loading="lazy"/>:<Icon name="user" size={15}/>}</span><span className="contributor-title"><b>{contributor.verified?contributor.login:'Anonymous contributor'}</b><small>{contributor.verified?'Verified GitHub account':'No verified GitHub account linked'}</small></span></button><span className="contributor-count"><b>{contributor.contributions.toLocaleString()}</b><small>commits</small></span>{profileUrl&&<a className="contributor-profile-link" href={profileUrl} target="_blank" rel="noopener noreferrer" aria-label={`Open ${contributor.login} GitHub profile`}><Icon name="external" size={13}/></a>}</div>
+            {share!==null?<div className="contributor-share"><span>Share of attributed contributor commits</span><b>{formatLanguagePercentage(share)}</b><div className="language-ranking-track"><i style={{width:`${share}%`}}/></div></div>:intelligence.hasNext&&<div className="contributor-share-unavailable">Load all contributor pages to calculate contribution shares.</div>}
+            {expanded&&<div className="contributor-expanded-details">{contributor.verified?<><div><span>GitHub profile</span>{profileUrl?<a href={profileUrl} target="_blank" rel="noopener noreferrer">@{contributor.login} <Icon name="external" size={11}/></a>:<b>@{contributor.login}</b>}</div><div><span>Contribution count</span><b>{contributor.contributions.toLocaleString()} commits{share!==null?` · ${formatLanguagePercentage(share)} of attributed total`:''}</b></div>{!contributor.verified?<p>No verified GitHub account is attached to this contributor record.</p>:intelligence.activityStatus==='ready'&&activity?<ContributorSparkline weeks={activity.weeks}/>:<p>{intelligence.activityStatus==='computing'?'GitHub is preparing weekly contributor statistics.':intelligence.activityStatus==='unavailable'?'GitHub has no weekly statistics available for this repository.':'Per-account weekly activity is unavailable.'}</p>}</>:<p>GitHub did not link this contributor record to an account. No profile, avatar, name or email is inferred.</p>}</div>}
+            {expanded&&contributor.verified&&<ContributorRecentCommits contributor={contributor} intelligence={commitIntelligence}/>}
+          </article>
+        })}</div>{intelligence.hasNext&&<div className="contributor-load-more"><Button kind="secondary" disabled={intelligence.loadingMore} onClick={intelligence.loadMore}>{intelligence.loadingMore?'Loading contributors…':'Load more contributors'}</Button>{intelligence.loadMoreError&&<span role="alert">{getContributorErrorMessage(intelligence.loadMoreError)} <button onClick={intelligence.loadMore}>Retry</button></span>}</div>}
+        <p className="contributor-share-note">{allPagesLoaded?'Share is each contributor’s GitHub contribution count divided by the sum of returned contributor counts.':'Contribution share is withheld until all GitHub contributor pages are loaded.'}</p>
+      </section><ContributorActivityChart intelligence={intelligence} repositoryName={selectedRepository.fullName}/></div>
+      </>}
+    </>}
+  </section>
+}
+
+function ContributorSparkline({ weeks }) {
+  const visible=[...weeks].slice(-12)
+  const max=Math.max(0,...visible.map((week)=>week.commits))
+  return visible.length>0?<div className="contributor-sparkline" role="img" aria-label="Recent weekly commits by this verified contributor">{visible.map((week)=><span key={week.week} title={`Week of ${formatContributorDate(week.week)}: ${week.commits} commits`}><i style={{height:`${max===0?1:Math.max(3,week.commits/max*100)}%`}}/><small>{formatContributorDate(week.week)}</small></span>)}</div>:<p>No weekly activity buckets were returned for this contributor.</p>
+}
+
+function ContributorRecentCommits({ contributor, intelligence }) {
+  const commits=intelligence.commits.filter((commit)=>commit.authorVerified===true&&commit.authorLogin===contributor.login).slice(0,5)
+  return <div className="contributor-recent-commits"><b>Recent commits by @{contributor.login}</b>{intelligence.commitsStatus==='loading'?<span>Loading verified commit history…</span>:intelligence.commitsStatus==='error'?<span>Commit history is unavailable right now.</span>:commits.length>0?commits.map((commit)=>{const url=getSafeGithubUrl(commit.url);const message=typeof commit.message==='string'?commit.message.split(/\r?\n/,1)[0]:'Commit message unavailable';return <div className="contributor-recent-commit" key={commit.sha}><span>{message}</span><small>{formatCommitDate(commit.date)}</small>{url&&<a href={url} target="_blank" rel="noopener noreferrer" aria-label={`Open commit by ${contributor.login} on GitHub`}><Icon name="external" size={11}/></a>}</div>}):<span>No matching commit in the currently loaded history. Load more commits in Commit Intelligence to expand the search.</span>}</div>
+}
+
+function ContributorActivityChart({ intelligence, repositoryName }) {
+  const weeks=intelligence.weeks.slice(-16)
+  const max=Math.max(0,...weeks.map((week)=>week.commits))
+  return <section className="contributor-activity-block"><div className="contributor-subheading"><div><h3>Weekly contribution activity</h3><span>{repositoryName} · GitHub contributor statistics</span></div><span className="contributor-period-note">Recent weeks</span></div>
+    {intelligence.activityStatus==='loading'&&<div className="contributor-activity-skeleton" role="status" aria-label="Loading contributor activity"><i/><i/><i/><i/><i/><i/></div>}
+    {intelligence.activityStatus==='error'&&<div className="contributor-activity-feedback" role="alert"><p>{getContributorErrorMessage(intelligence.activityError)}</p><Button kind="secondary" onClick={intelligence.retryActivity}>Retry activity</Button></div>}
+    {intelligence.activityStatus==='computing'&&<div className="contributor-activity-feedback" role="status"><p>GitHub is computing cached contributor statistics. Try again shortly.</p><Button kind="secondary" onClick={intelligence.retryActivity}>Check again</Button></div>}
+    {intelligence.activityStatus==='unavailable'&&<div className="contributor-activity-feedback" role="status"><p>GitHub did not provide contributor activity statistics. This is unavailable data, not zero activity.</p><Button kind="secondary" onClick={intelligence.retryActivity}>Retry activity</Button></div>}
+    {intelligence.activityStatus==='ready'&&weeks.length===0&&<div className="contributor-activity-feedback" role="status"><p>No weekly contributor activity buckets were returned.</p></div>}
+    {intelligence.activityStatus==='ready'&&weeks.length>0&&<><div className="contributor-activity-total"><b>{weeks.reduce((sum,week)=>sum+week.commits,0).toLocaleString()}</b><span>commits across the displayed weekly buckets</span></div><div className="contributor-week-chart" role="img" aria-label={`Weekly commits across contributor records for ${repositoryName}`}>{weeks.map((week)=><span key={week.week} title={`Week of ${formatContributorDate(week.week)}: ${week.commits} commits`}><i style={{height:`${max===0?1:Math.max(3,week.commits/max*100)}%`}}/><small>{formatContributorDate(week.week)}</small></span>)}</div></>}
+  </section>
+}
+
+function RecentRepositoryActivity({ intelligence, repositoryName }) {
+  const commits=intelligence.commits.slice(0,5)
+  return <section className="panel activity-feed live-repository-activity"><div className="panel-heading"><div><h2>Recent activity</h2><p>{repositoryName?`${repositoryName} · live commit history`:'Live repository commit history'}</p></div><span className="commit-live-label"><i/> LIVE</span></div>
+    {intelligence.commitsStatus==='loading'&&<div className="commit-history-skeleton" role="status" aria-label="Loading recent repository commits"><i/><i/><i/></div>}
+    {intelligence.commitsStatus==='error'&&<div className="recent-activity-feedback" role="alert"><p>{getCommitErrorMessage(intelligence.commitsError)}</p><Button kind="secondary" onClick={intelligence.retryHistory}>Retry recent commits</Button></div>}
+    {intelligence.commitsStatus==='success'&&commits.length===0&&<div className="recent-activity-feedback"><p>No recent commits were returned for this repository.</p></div>}
+    {intelligence.commitsStatus==='success'&&commits.map((commit)=>{const url=getSafeGithubUrl(commit.url);const message=typeof commit.message==='string'?commit.message.split(/\r?\n/,1)[0]:'Commit message unavailable';return <div className="recent-commit-item" key={commit.sha}><span className="recent-commit-marker"><Icon name="code" size={13}/></span><span className="recent-commit-copy"><b>{message}</b><small>{formatCommitDate(commit.date)}</small></span>{url&&<a href={url} target="_blank" rel="noopener noreferrer" aria-label="Open commit on GitHub"><Icon name="external" size={13}/></a>}</div>})}
+  </section>
 }
 
 const LANGUAGE_COLORS = ['#a89aff', '#63c4d4', '#d48ad6', '#7fc69a', '#e0b875', '#7d92df', '#d97e9f', '#9aa8bb']
@@ -517,10 +604,6 @@ function LanguageChart() {
   return <div className="language-chart-wrap"><div className="language-donut" style={{background:`conic-gradient(${segments})`}}><div><strong>6</strong><span>languages</span></div></div><span className="donut-caption">Most used <b>TypeScript</b></span></div>
 }
 
-function ActivityItem({ tone, title, detail, time }) {
-  return <div className="activity-item"><span className={`activity-marker ${tone}`}><i/></span><div><b>{title}</b><small>{detail}</small></div><time>{time}</time></div>
-}
-
 function RepoTable({ repos, openRepo }) {
   return <div className="repo-table"><div className="repo-table-head"><span>REPOSITORY</span><span>VISIBILITY</span><span>LANGUAGE</span><span>STARS</span><span>UPDATED</span><i/></div>{repos.map((repo)=><button className="repo-row" key={repo.id} onClick={() => openRepo(repo)}><span className="repo-name-cell"><span className="repo-symbol"><Icon name="repo" size={15}/></span><span><b>{repo.name}</b><small>{repo.fullName}</small></span></span><span><RepositoryVisibility visibility={repo.visibility}/></span><span className="language-cell">{repo.primaryLanguage || '—'}</span><span className="stars-cell">✧ {formatCount(repo.stars)}</span><span className="updated-cell">{formatRepositoryDate(repo.updatedAt)}</span><Icon name="chevron" size={15} className="row-chevron"/></button>)}</div>
 }
@@ -629,6 +712,10 @@ function App() {
     selectedCommitRepository,
   )
   const languageIntelligence = useLanguageIntelligence(status === 'authenticated' && visiblePage === 'overview')
+  const contributorIntelligence = useContributorIntelligence(
+    status === 'authenticated' && visiblePage === 'overview' && Boolean(selectedCommitRepository),
+    selectedCommitRepository,
+  )
   const workspacePages = ['overview', 'repositories', 'code-reviews', 'analytics', 'settings']
   const navigate=(next)=>{
     if (workspacePages.includes(next) && status !== 'authenticated') {
@@ -654,7 +741,7 @@ function App() {
   if(visiblePage==='login'||visiblePage==='register') return <AuthPage mode={visiblePage} navigate={navigate}/>
   if (status !== 'authenticated') return <AuthPage mode="login" navigate={navigate}/>
   let view
-  if(visiblePage==='overview') view=<Overview navigate={navigate} openRepo={openRepository} user={user} repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry} selectedCommitRepository={selectedCommitRepository} onSelectCommitRepository={setCommitRepositoryId} commitIntelligence={commitIntelligence} languageIntelligence={languageIntelligence}/>
+  if(visiblePage==='overview') view=<Overview navigate={navigate} openRepo={openRepository} user={user} repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry} selectedCommitRepository={selectedCommitRepository} onSelectCommitRepository={setCommitRepositoryId} commitIntelligence={commitIntelligence} languageIntelligence={languageIntelligence} contributorIntelligence={contributorIntelligence}/>
   else if(visiblePage==='repositories') view=<Repositories repositories={githubRepositories.repositories} status={githubRepositories.status} error={githubRepositories.error} retry={githubRepositories.retry} openRepo={openRepository}/>
   else if(visiblePage==='code-reviews') view=<Reviews/>
   else if(visiblePage==='analytics') view=<Analytics/>

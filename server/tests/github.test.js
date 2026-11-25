@@ -9,6 +9,7 @@ const { createGithubService } = require('../src/services/github.service');
 const { createGithubAppService } = require('../src/services/github-app.service');
 const { requestGithubApi } = require('../src/services/github-api.service');
 const { mapLanguageBreakdown, aggregateLanguageBreakdowns } = require('../src/utils/language-intelligence');
+const { mapContributor, mapContributorActivity } = require('../src/utils/contributor-intelligence');
 
 const USER_ID = '000000000000000000000001';
 const NEBULITH_JWT_SECRET = 'github-tests-use-this-secret-with-at-least-32-bytes';
@@ -477,7 +478,7 @@ test('commit history uses the linked installation token and GitHub pagination he
           message: 'Add commit intelligence',
           author: { name: 'Reyansh Bitla', date: '2026-02-01T12:00:00Z' },
         },
-        author: { login: 'ReyanshBitla' },
+        author: { id: 101, login: 'ReyanshBitla' },
         html_url: 'https://github.com/nebulith/neb-public/commit/aaaaaaaa',
       }]), {
         status: 200,
@@ -500,6 +501,8 @@ test('commit history uses the linked installation token and GitHub pagination he
     sha: 'a'.repeat(40),
     message: 'Add commit intelligence',
     author: 'ReyanshBitla',
+    authorLogin: 'ReyanshBitla',
+    authorVerified: true,
     date: '2026-02-01T12:00:00Z',
     url: 'https://github.com/nebulith/neb-public/commit/aaaaaaaa',
   });
@@ -531,6 +534,23 @@ test('empty commit history is returned as an empty list without invented paginat
   });
 });
 
+test('commit author names without a verified GitHub account are never marked as contributor identities', async () => {
+  const fixture = makeConnectedFixture({
+    fetchImpl: async () => new Response(JSON.stringify([{
+      sha: 'e'.repeat(40),
+      commit: { message: 'Anonymous commit', author: { name: 'Local Developer', date: '2026-02-02T10:00:00Z' } },
+      author: null,
+      html_url: 'https://github.com/acme/project/commit/eeeeeeee',
+    }]), { status: 200, headers: { 'content-type': 'application/json' } }),
+  });
+
+  const result = await fixture.service.listCommits(USER_ID, 'acme', 'project');
+
+  assert.equal(result.commits[0].author, 'Local Developer');
+  assert.equal(result.commits[0].authorLogin, null);
+  assert.equal(result.commits[0].authorVerified, false);
+});
+
 test('commit history and details cannot access repositories outside the selected installation', async () => {
   const fixture = makeConnectedFixture({
     fetchImpl: async () => new Response(JSON.stringify({ message: 'private upstream message' }), { status: 404 }),
@@ -553,7 +573,7 @@ test('commit details return only safe summary fields and available diff statisti
       return new Response(JSON.stringify({
         sha: 'b'.repeat(40),
         commit: { message: 'Improve dashboard', author: { name: 'A. Developer', date: '2026-02-02T08:30:00Z' } },
-        author: { login: 'developer' },
+        author: { id: 102, login: 'developer' },
         html_url: 'https://github.com/nebulith/neb-public/commit/bbbbbbbb',
         stats: { additions: 21, deletions: 4, total: 25 },
         files: [{ filename: 'src/private.js', patch: 'must not be retained' }],
@@ -568,6 +588,8 @@ test('commit details return only safe summary fields and available diff statisti
     sha: 'b'.repeat(40),
     message: 'Improve dashboard',
     author: 'developer',
+    authorLogin: 'developer',
+    authorVerified: true,
     date: '2026-02-02T08:30:00Z',
     url: 'https://github.com/nebulith/neb-public/commit/bbbbbbbb',
     stats: { additions: 21, deletions: 4, total: 25 },
@@ -714,6 +736,131 @@ test('repository languages validate coordinates and map GitHub API failures safe
   });
   assert.equal(fetchCount, 1);
   assert.deepEqual(fixture.appService.revokedInstallationTokens, [INSTALLATION_TOKEN]);
+});
+
+test('contributor mapping distinguishes verified GitHub accounts from anonymous authors', () => {
+  assert.deepEqual(mapContributor({
+    id: 123,
+    login: 'dev-account',
+    avatar_url: 'https://avatars.githubusercontent.com/u/123',
+    contributions: 18,
+  }), {
+    id: 123,
+    login: 'dev-account',
+    avatarUrl: 'https://avatars.githubusercontent.com/u/123',
+    profileUrl: 'https://github.com/dev-account',
+    verified: true,
+    contributions: 18,
+  });
+
+  const anonymous = mapContributor({ name: 'Commit Author', email: 'private@example.test', contributions: 4 });
+  assert.deepEqual(anonymous, {
+    id: null, login: null, avatarUrl: null, profileUrl: null, verified: false, contributions: 4,
+  });
+  assert.doesNotMatch(JSON.stringify(anonymous), /Commit Author|private@example\.test/);
+  assert.equal(mapContributor({ id: 2, login: 'fake-login', avatar_url: 'https://evil.example/avatar.png', contributions: 1 }).avatarUrl, null);
+});
+
+test('contributor activity aggregates weekly commits and omits anonymous identity claims', () => {
+  const result = mapContributorActivity([
+    { author: { id: 10, login: 'first' }, total: 3, weeks: [{ w: 100, c: 2 }, { w: 200, c: 1 }] },
+    { author: { id: 11, login: 'second' }, total: 2, weeks: [{ w: 100, c: 1 }, { w: 300, c: 1 }] },
+    { author: null, total: 1, weeks: [{ w: 200, c: 1 }] },
+  ]);
+
+  assert.deepEqual(result, {
+    status: 'ready',
+    weeks: [{ week: 100, commits: 3 }, { week: 200, commits: 2 }, { week: 300, commits: 1 }],
+    contributors: [
+      { id: 10, login: 'first', weeks: [{ week: 100, commits: 2 }, { week: 200, commits: 1 }] },
+      { id: 11, login: 'second', weeks: [{ week: 100, commits: 1 }, { week: 300, commits: 1 }] },
+    ],
+  });
+  assert.throws(() => mapContributorActivity([{ total: 1, weeks: [{ w: 100, c: -1 }] }]), { code: 'GITHUB_INVALID_RESPONSE' });
+});
+
+test('contributor listing paginates verified and anonymous results through the installation token', async () => {
+  let requestedUrl;
+  let authorizationHeader;
+  const fixture = makeConnectedFixture({
+    fetchImpl: async (url, options) => {
+      requestedUrl = new URL(url);
+      authorizationHeader = options.headers.Authorization;
+      return new Response(JSON.stringify([
+        { id: 70, login: 'contributor', avatar_url: 'https://avatars.githubusercontent.com/u/70', contributions: 12 },
+        { name: 'Private Author Name', email: 'author@example.test', contributions: 3 },
+      ]), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          link: '<https://api.github.com/repos/acme/project/contributors?page=2&per_page=2&anon=1>; rel="next"',
+        },
+      });
+    },
+  });
+
+  const result = await fixture.service.listContributors(USER_ID, 'acme', 'project', { page: 1, perPage: 2 });
+
+  assert.equal(requestedUrl.pathname, '/repos/acme/project/contributors');
+  assert.equal(requestedUrl.searchParams.get('anon'), '1');
+  assert.equal(requestedUrl.searchParams.get('page'), '1');
+  assert.equal(requestedUrl.searchParams.get('per_page'), '2');
+  assert.equal(authorizationHeader, `Bearer ${INSTALLATION_TOKEN}`);
+  assert.deepEqual(result.pagination, { page: 1, perPage: 2, hasNext: true });
+  assert.equal(result.contributors[0].verified, true);
+  assert.equal(result.contributors[1].verified, false);
+  assert.doesNotMatch(JSON.stringify(result), /Private Author Name|author@example\.test|ghs-test-installation-access-token/);
+  assert.deepEqual(fixture.appService.revokedInstallationTokens, [INSTALLATION_TOKEN]);
+});
+
+test('empty repositories return an empty contributor list and invalid coordinates are rejected locally', async () => {
+  let fetchCount = 0;
+  const fixture = makeConnectedFixture({
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  await assert.rejects(fixture.service.listContributors(USER_ID, '../owner', 'repo'), {
+    statusCode: 400, code: 'GITHUB_INVALID_REPOSITORY',
+  });
+  assert.equal(fetchCount, 0);
+  assert.deepEqual(await fixture.service.listContributors(USER_ID, 'acme', 'empty-repo'), {
+    contributors: [],
+    pagination: { page: 1, perPage: 30, hasNext: false },
+  });
+  assert.equal(fixture.appService.revokedInstallationTokens.length, 1);
+});
+
+test('contributor activity distinguishes ready, computing, unavailable and rate-limited responses', async () => {
+  const responses = [
+    new Response(null, { status: 202, headers: { 'retry-after': '18' } }),
+    new Response(null, { status: 204 }),
+    new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
+    new Response(JSON.stringify([{ author: { id: 5, login: 'dev' }, total: 1, weeks: [{ w: 300, c: 1 }] }]), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }),
+    new Response(JSON.stringify({ message: 'private error body' }), { status: 403, headers: { 'retry-after': '25' } }),
+  ];
+  const fixture = makeConnectedFixture({ fetchImpl: async () => responses.shift() });
+
+  assert.deepEqual(await fixture.service.getContributorActivity(USER_ID, 'acme', 'project'), {
+    status: 'computing', weeks: [], contributors: [], retryAfterSeconds: 18,
+  });
+  assert.deepEqual(await fixture.service.getContributorActivity(USER_ID, 'acme', 'project'), {
+    status: 'unavailable', weeks: [], contributors: [],
+  });
+  assert.deepEqual(await fixture.service.getContributorActivity(USER_ID, 'acme', 'project'), {
+    status: 'unavailable', weeks: [], contributors: [],
+  });
+  assert.deepEqual(await fixture.service.getContributorActivity(USER_ID, 'acme', 'project'), {
+    status: 'ready', weeks: [{ week: 300, commits: 1 }], contributors: [{ id: 5, login: 'dev', weeks: [{ week: 300, commits: 1 }] }],
+  });
+  await assert.rejects(fixture.service.getContributorActivity(USER_ID, 'acme', 'project'), {
+    statusCode: 429, code: 'GITHUB_RATE_LIMITED', retryAfter: 25,
+  });
+  assert.equal(fixture.appService.revokedInstallationTokens.length, 5);
 });
 
 test('repositories outside the installation are treated as unavailable', async () => {
@@ -1039,6 +1186,73 @@ test('language endpoints require NEBULITH auth and expose aggregate and reposito
       { name: 'TypeScript', bytes: 240, percentage: 80 },
       { name: 'CSS', bytes: 60, percentage: 20 },
     ]);
+    assert.deepEqual(appService.revokedInstallationTokens, [INSTALLATION_TOKEN, INSTALLATION_TOKEN]);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('contributor endpoints enforce authentication, validate pagination, and return safe stats states', async () => {
+  const integrationModel = createIntegrationModel([{
+    userId: USER_ID,
+    githubAccountId: '1001',
+    installationId: '42',
+    installationAccountId: '84',
+    installationAccountLogin: 'nebulith-org',
+    installationAccountType: 'Organization',
+  }]);
+  const accessToken = jwt.sign({}, NEBULITH_JWT_SECRET, {
+    algorithm: 'HS256', subject: USER_ID, expiresIn: '1h',
+  });
+  let contributorUrl;
+  const appService = createAppServiceMock();
+  const app = createApp({
+    nodeEnv: 'test', frontendUrl: null, jwtSecret: NEBULITH_JWT_SECRET, jwtExpiresIn: '1h',
+  }, {
+    UserModel: { findById: async (id) => ({ _id: id }) },
+    IntegrationModel: integrationModel,
+    configProvider: () => githubConfig,
+    appService,
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/repos/acme/project/contributors') {
+        contributorUrl = parsed;
+        return new Response(JSON.stringify([{ id: 9, login: 'verified-user', contributions: 8 }]), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 202, headers: { 'retry-after': '15' } });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const baseUrl = `http://127.0.0.1:${server.address().port}/api/github/repositories/acme/project`;
+
+  try {
+    assert.equal((await fetch(`${baseUrl}/contributors`)).status, 401);
+    assert.equal((await fetch(`${baseUrl}/contributor-activity`)).status, 401);
+
+    const invalidPagination = await fetch(`${baseUrl}/contributors?page=0`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    assert.equal(invalidPagination.status, 400);
+
+    const contributorsResponse = await fetch(`${baseUrl}/contributors?page=2&per_page=5`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const contributorsBody = await contributorsResponse.json();
+    assert.equal(contributorsResponse.status, 200);
+    assert.equal(contributorUrl.searchParams.get('page'), '2');
+    assert.equal(contributorUrl.searchParams.get('per_page'), '5');
+    assert.equal(contributorUrl.searchParams.get('anon'), '1');
+    assert.equal(contributorsBody.data.contributors[0].login, 'verified-user');
+
+    const activityResponse = await fetch(`${baseUrl}/contributor-activity`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const activityBody = await activityResponse.json();
+    assert.equal(activityResponse.status, 200);
+    assert.deepEqual(activityBody.data, { status: 'computing', weeks: [], contributors: [], retryAfterSeconds: 15 });
     assert.deepEqual(appService.revokedInstallationTokens, [INSTALLATION_TOKEN, INSTALLATION_TOKEN]);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
