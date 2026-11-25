@@ -463,6 +463,161 @@ test('repository metadata is retrieved through the linked installation token', a
   assert.equal(fixture.appService.revokedInstallationTokens.length, 1);
 });
 
+test('commit history uses the linked installation token and GitHub pagination headers', async () => {
+  let requestedUrl;
+  let authorizationHeader;
+  const fixture = makeConnectedFixture({
+    fetchImpl: async (url, options) => {
+      requestedUrl = new URL(url);
+      authorizationHeader = options.headers.Authorization;
+      return new Response(JSON.stringify([{
+        sha: 'a'.repeat(40),
+        commit: {
+          message: 'Add commit intelligence',
+          author: { name: 'Reyansh Bitla', date: '2026-02-01T12:00:00Z' },
+        },
+        author: { login: 'ReyanshBitla' },
+        html_url: 'https://github.com/nebulith/neb-public/commit/aaaaaaaa',
+      }]), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          link: '<https://api.github.com/repos/nebulith/neb-public/commits?page=4&per_page=5>; rel="next"',
+        },
+      });
+    },
+  });
+
+  const result = await fixture.service.listCommits(USER_ID, 'nebulith', 'neb-public', { page: 3, perPage: 5 });
+
+  assert.equal(requestedUrl.pathname, '/repos/nebulith/neb-public/commits');
+  assert.equal(requestedUrl.searchParams.get('page'), '3');
+  assert.equal(requestedUrl.searchParams.get('per_page'), '5');
+  assert.equal(authorizationHeader, `Bearer ${INSTALLATION_TOKEN}`);
+  assert.deepEqual(result.pagination, { page: 3, perPage: 5, hasNext: true });
+  assert.deepEqual(result.commits[0], {
+    sha: 'a'.repeat(40),
+    message: 'Add commit intelligence',
+    author: 'ReyanshBitla',
+    date: '2026-02-01T12:00:00Z',
+    url: 'https://github.com/nebulith/neb-public/commit/aaaaaaaa',
+  });
+  assert.deepEqual(fixture.appService.revokedInstallationTokens, [INSTALLATION_TOKEN]);
+});
+
+test('invalid repository coordinates and commit SHAs are rejected before GitHub calls', async () => {
+  let fetchCount = 0;
+  const fixture = makeConnectedFixture({ fetchImpl: async () => { fetchCount += 1; return new Response('[]'); } });
+
+  await assert.rejects(fixture.service.listCommits(USER_ID, '../owner', 'repo'), {
+    statusCode: 400, code: 'GITHUB_INVALID_REPOSITORY',
+  });
+  await assert.rejects(fixture.service.getCommitDetails(USER_ID, 'owner', 'repo', 'not-a-sha'), {
+    statusCode: 400, code: 'GITHUB_INVALID_COMMIT',
+  });
+  assert.equal(fetchCount, 0);
+  assert.equal(fixture.appService.revokedInstallationTokens.length, 0);
+});
+
+test('empty commit history is returned as an empty list without invented pagination totals', async () => {
+  const fixture = makeConnectedFixture({
+    fetchImpl: async () => new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
+  });
+
+  assert.deepEqual(await fixture.service.listCommits(USER_ID, 'nebulith', 'empty-repo'), {
+    commits: [],
+    pagination: { page: 1, perPage: 20, hasNext: false },
+  });
+});
+
+test('commit history and details cannot access repositories outside the selected installation', async () => {
+  const fixture = makeConnectedFixture({
+    fetchImpl: async () => new Response(JSON.stringify({ message: 'private upstream message' }), { status: 404 }),
+  });
+
+  await assert.rejects(fixture.service.listCommits(USER_ID, 'another-owner', 'private-repo'), {
+    statusCode: 404, code: 'GITHUB_RESOURCE_NOT_FOUND',
+  });
+  await assert.rejects(fixture.service.getCommitDetails(USER_ID, 'another-owner', 'private-repo', 'd'.repeat(40)), {
+    statusCode: 404, code: 'GITHUB_RESOURCE_NOT_FOUND',
+  });
+  assert.equal(fixture.appService.revokedInstallationTokens.length, 2);
+});
+
+test('commit details return only safe summary fields and available diff statistics', async () => {
+  let requestedPath;
+  const fixture = makeConnectedFixture({
+    fetchImpl: async (url) => {
+      requestedPath = new URL(url).pathname;
+      return new Response(JSON.stringify({
+        sha: 'b'.repeat(40),
+        commit: { message: 'Improve dashboard', author: { name: 'A. Developer', date: '2026-02-02T08:30:00Z' } },
+        author: { login: 'developer' },
+        html_url: 'https://github.com/nebulith/neb-public/commit/bbbbbbbb',
+        stats: { additions: 21, deletions: 4, total: 25 },
+        files: [{ filename: 'src/private.js', patch: 'must not be retained' }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+
+  const result = await fixture.service.getCommitDetails(USER_ID, 'nebulith', 'neb-public', 'b'.repeat(40));
+
+  assert.equal(requestedPath, `/repos/nebulith/neb-public/commits/${'b'.repeat(40)}`);
+  assert.deepEqual(result, {
+    sha: 'b'.repeat(40),
+    message: 'Improve dashboard',
+    author: 'developer',
+    date: '2026-02-02T08:30:00Z',
+    url: 'https://github.com/nebulith/neb-public/commit/bbbbbbbb',
+    stats: { additions: 21, deletions: 4, total: 25 },
+  });
+  assert.doesNotMatch(JSON.stringify(result), /private\.js|patch/);
+});
+
+test('commit activity distinguishes ready zero activity from unavailable and computing statistics', async () => {
+  const responses = [
+    new Response(JSON.stringify([{ week: 1_770_000_000, total: 0, days: [0, 0, 0, 0, 0, 0, 0] }]), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }),
+    new Response(null, { status: 204 }),
+    new Response(null, { status: 202, headers: { 'retry-after': '30' } }),
+    new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } }),
+  ];
+  const fixture = makeConnectedFixture({ fetchImpl: async () => responses.shift() });
+
+  assert.deepEqual(await fixture.service.getCommitActivity(USER_ID, 'nebulith', 'neb-public'), {
+    status: 'ready',
+    weeks: [{ week: 1_770_000_000, total: 0, days: [0, 0, 0, 0, 0, 0, 0] }],
+  });
+  assert.deepEqual(await fixture.service.getCommitActivity(USER_ID, 'nebulith', 'neb-public'), {
+    status: 'unavailable', weeks: [],
+  });
+  assert.deepEqual(await fixture.service.getCommitActivity(USER_ID, 'nebulith', 'neb-public'), {
+    status: 'computing', weeks: [], retryAfterSeconds: 30,
+  });
+  assert.deepEqual(await fixture.service.getCommitActivity(USER_ID, 'nebulith', 'neb-public'), {
+    status: 'unavailable', weeks: [],
+  });
+  assert.equal(fixture.appService.revokedInstallationTokens.length, 4);
+});
+
+test('commit API rate limits are mapped safely and preserve Retry-After', async () => {
+  const fixture = makeConnectedFixture({
+    fetchImpl: async () => new Response(JSON.stringify({ message: 'secret upstream response' }), {
+      status: 403,
+      headers: { 'x-ratelimit-remaining': '0', 'retry-after': '45' },
+    }),
+  });
+
+  await assert.rejects(fixture.service.listCommits(USER_ID, 'nebulith', 'neb-public'), (error) => {
+    assert.equal(error.statusCode, 429);
+    assert.equal(error.retryAfter, 45);
+    assert.doesNotMatch(error.message, /secret upstream/);
+    return true;
+  });
+  assert.deepEqual(fixture.appService.revokedInstallationTokens, [INSTALLATION_TOKEN]);
+});
+
 test('repositories outside the installation are treated as unavailable', async () => {
   const fixture = makeConnectedFixture({
     fetchImpl: async () => new Response(JSON.stringify({ message: 'private details' }), { status: 404 }),
@@ -644,6 +799,90 @@ test('authenticated repository endpoint applies client pagination and never retu
   }
 });
 
+test('commit intelligence routes require NEBULITH auth and return paginated commits, details, and activity', async () => {
+  const integrationModel = createIntegrationModel([{
+    userId: USER_ID,
+    githubAccountId: '1001',
+    installationId: '42',
+    installationAccountId: '84',
+    installationAccountLogin: 'nebulith-org',
+    installationAccountType: 'Organization',
+  }]);
+  const accessToken = jwt.sign({}, NEBULITH_JWT_SECRET, {
+    algorithm: 'HS256', subject: USER_ID, expiresIn: '1h',
+  });
+  const appService = createAppServiceMock();
+  const app = createApp({
+    nodeEnv: 'test', frontendUrl: null, jwtSecret: NEBULITH_JWT_SECRET, jwtExpiresIn: '1h',
+  }, {
+    UserModel: { findById: async (id) => ({ _id: id }) },
+    IntegrationModel: integrationModel,
+    configProvider: () => githubConfig,
+    appService,
+    fetchImpl: async (url) => {
+      const { pathname } = new URL(url);
+      if (pathname.endsWith('/stats/commit_activity')) {
+        return new Response(JSON.stringify([{ week: 1_770_000_000, total: 2, days: [0, 0, 1, 0, 0, 1, 0] }]), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname.endsWith(`/${'c'.repeat(40)}`)) {
+        return new Response(JSON.stringify({
+          sha: 'c'.repeat(40), commit: { message: 'Commit details', author: { name: 'Developer', date: '2026-02-03T12:00:00Z' } },
+          html_url: 'https://github.com/nebulith/neb-public/commit/cccccccc', stats: { additions: 2, deletions: 1, total: 3 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([{
+        sha: 'c'.repeat(40), commit: { message: 'Commit details', author: { name: 'Developer', date: '2026-02-03T12:00:00Z' } },
+        html_url: 'https://github.com/nebulith/neb-public/commit/cccccccc',
+      }]), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const baseUrl = `http://127.0.0.1:${server.address().port}/api/github/repositories/nebulith/neb-public`;
+
+  try {
+    for (const path of ['/commits', `/commits/${'c'.repeat(40)}`, '/commit-activity']) {
+      const unauthenticated = await fetch(`${baseUrl}${path}`);
+      assert.equal(unauthenticated.status, 401);
+    }
+
+    const commitsResponse = await fetch(`${baseUrl}/commits?page=2&per_page=5`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const commitsBody = await commitsResponse.json();
+    assert.equal(commitsResponse.status, 200);
+    assert.deepEqual(commitsBody.data.pagination, { page: 2, perPage: 5, hasNext: false });
+    assert.equal(commitsBody.data.commits[0].sha, 'c'.repeat(40));
+
+    const detailsResponse = await fetch(`${baseUrl}/commits/${'c'.repeat(40)}`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const detailsBody = await detailsResponse.json();
+    assert.equal(detailsResponse.status, 200);
+    assert.deepEqual(detailsBody.data.commit.stats, { additions: 2, deletions: 1, total: 3 });
+
+    const activityResponse = await fetch(`${baseUrl}/commit-activity`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const activityBody = await activityResponse.json();
+    assert.equal(activityResponse.status, 200);
+    assert.equal(activityBody.data.status, 'ready');
+    assert.equal(activityBody.data.weeks[0].total, 2);
+
+    const invalidPagination = await fetch(`${baseUrl}/commits?per_page=101`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    assert.equal(invalidPagination.status, 400);
+    assert.deepEqual(appService.revokedInstallationTokens, [
+      INSTALLATION_TOKEN, INSTALLATION_TOKEN, INSTALLATION_TOKEN,
+    ]);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
 test('GitHub App JWT uses RS256 with an issuer and short validity', () => {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const appService = createGithubAppService({ now: () => Date.parse('2026-01-01T00:00:00Z') });
@@ -655,4 +894,37 @@ test('GitHub App JWT uses RS256 with an issuer and short validity', () => {
 
   assert.equal(verified.iss, githubConfig.appId);
   assert.equal(verified.exp - verified.iat, 9 * 60);
+});
+
+test('installation tokens request only existing read permissions needed by repository intelligence', async () => {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  let requestBody;
+  let requestUrl;
+  let requestJwt;
+  const appService = createGithubAppService({
+    now: () => Date.parse('2026-01-01T00:00:00Z'),
+    fetchImpl: async (url, options) => {
+      requestUrl = new URL(url);
+      requestBody = JSON.parse(options.body);
+      requestJwt = options.headers.Authorization.slice('Bearer '.length);
+      return new Response(JSON.stringify({ token: INSTALLATION_TOKEN }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  const token = await appService.createInstallationAccessToken({
+    config: { ...githubConfig, privateKey },
+    installationId: '42',
+  });
+  const claims = jwt.verify(requestJwt, publicKey, {
+    algorithms: ['RS256'],
+    clockTimestamp: Math.floor(Date.parse('2026-01-01T00:00:00Z') / 1000),
+  });
+
+  assert.equal(token, INSTALLATION_TOKEN);
+  assert.equal(requestUrl.pathname, '/app/installations/42/access_tokens');
+  assert.deepEqual(requestBody, { permissions: { contents: 'read', metadata: 'read', pull_requests: 'read' } });
+  assert.equal(claims.iss, githubConfig.appId);
 });

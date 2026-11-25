@@ -2,7 +2,7 @@ const createHttpError = require('../utils/http-error');
 
 const getUserId = (req) => req.user._id;
 
-const parsePagination = (query) => {
+const parsePagination = (query, defaultPerPage = 30) => {
   const readValue = (value, fallback, max, name) => {
     if (value === undefined) {
       return fallback;
@@ -20,7 +20,7 @@ const parsePagination = (query) => {
 
   return {
     page: readValue(query.page, 1, 10000, 'page'),
-    perPage: readValue(query.per_page, 30, 100, 'per_page'),
+    perPage: readValue(query.per_page, defaultPerPage, 100, 'per_page'),
   };
 };
 
@@ -58,6 +58,30 @@ const createGithubController = (githubService) => ({
   listRepositories: async (req, res) => res.status(200).json({
     success: true,
     data: await githubService.listRepositories(getUserId(req), parsePagination(req.query)),
+  }),
+
+  listCommits: async (req, res) => res.status(200).json({
+    success: true,
+    data: await githubService.listCommits(
+      getUserId(req),
+      req.params.owner,
+      req.params.repo,
+      parsePagination(req.query, 20),
+    ),
+  }),
+
+  commitDetails: async (req, res) => res.status(200).json({
+    success: true,
+    data: {
+      commit: await githubService.getCommitDetails(
+        getUserId(req), req.params.owner, req.params.repo, req.params.sha,
+      ),
+    },
+  }),
+
+  commitActivity: async (req, res) => res.status(200).json({
+    success: true,
+    data: await githubService.getCommitActivity(getUserId(req), req.params.owner, req.params.repo),
   }),
 
   repositoryDetails: async (req, res) => res.status(200).json({

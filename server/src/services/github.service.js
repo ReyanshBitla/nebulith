@@ -10,8 +10,76 @@ const { requestGithubApi } = require('./github-api.service');
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const STATE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const REPOSITORY_PART_PATTERN = /^[A-Za-z0-9_.-]+$/;
+const COMMIT_SHA_PATTERN = /^[A-Fa-f\d]{7,64}$/;
 
 const getId = (value) => (value && typeof value.toString === 'function' ? value.toString() : String(value));
+
+const validateRepositoryCoordinates = (owner, repositoryName) => {
+  if (
+    typeof owner !== 'string'
+    || typeof repositoryName !== 'string'
+    || owner.length > 100
+    || repositoryName.length > 100
+    || !REPOSITORY_PART_PATTERN.test(owner)
+    || !REPOSITORY_PART_PATTERN.test(repositoryName)
+    || owner === '.'
+    || owner === '..'
+    || repositoryName === '.'
+    || repositoryName === '..'
+  ) {
+    throw createHttpError(400, 'GITHUB_INVALID_REPOSITORY', 'A valid GitHub repository owner and name are required.');
+  }
+};
+
+const validateCommitSha = (sha) => {
+  if (typeof sha !== 'string' || !COMMIT_SHA_PATTERN.test(sha)) {
+    throw createHttpError(400, 'GITHUB_INVALID_COMMIT', 'A valid commit SHA is required.');
+  }
+};
+
+const mapCommit = (commit) => {
+  if (!commit || typeof commit !== 'object' || !COMMIT_SHA_PATTERN.test(commit.sha || '') || !commit.commit) {
+    throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid commit response.');
+  }
+  return {
+    sha: commit.sha,
+    message: typeof commit.commit.message === 'string' ? commit.commit.message : null,
+    author: commit.author?.login || commit.commit.author?.name || null,
+    date: commit.commit.author?.date || commit.commit.committer?.date || null,
+    url: typeof commit.html_url === 'string' ? commit.html_url : null,
+  };
+};
+
+const mapCommitDetails = (commit) => {
+  const stats = commit.stats;
+  const validStats = Number.isSafeInteger(stats?.additions)
+    && Number.isSafeInteger(stats?.deletions)
+    && Number.isSafeInteger(stats?.total)
+    && stats.additions >= 0
+    && stats.deletions >= 0
+    && stats.total >= 0;
+  return {
+    ...mapCommit(commit),
+    stats: validStats
+      ? { additions: stats.additions, deletions: stats.deletions, total: stats.total }
+      : null,
+  };
+};
+
+const mapCommitActivityWeek = (week) => {
+  if (
+    !Number.isSafeInteger(week?.week)
+    || !Number.isSafeInteger(week?.total)
+    || week.total < 0
+    || !Array.isArray(week.days)
+    || week.days.length !== 7
+    || week.days.some((count) => !Number.isSafeInteger(count) || count < 0)
+  ) {
+    throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned invalid commit activity data.');
+  }
+  return { week: week.week, total: week.total, days: week.days };
+};
 
 const createGithubService = ({
   IntegrationModel = GitHubIntegration,
@@ -306,19 +374,81 @@ const createGithubService = ({
     });
   };
 
+  const listCommits = async (userId, owner, repositoryName, { page = 1, perPage = 20 } = {}) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const result = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/commits?per_page=${perPage}&page=${page}`,
+        token,
+        fetchImpl,
+        returnResponse: true,
+      });
+      if (!Array.isArray(result.data)) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid commit list.');
+      }
+
+      const linkHeader = result.headers.get('link') || '';
+      return {
+        commits: result.data.map(mapCommit),
+        pagination: {
+          page,
+          perPage,
+          hasNext: /rel="next"/.test(linkHeader),
+        },
+      };
+    });
+  };
+
+  const getCommitDetails = async (userId, owner, repositoryName, sha) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    validateCommitSha(sha);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const commit = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/commits/${encodeURIComponent(sha)}`,
+        token,
+        fetchImpl,
+      });
+      if (!commit || typeof commit !== 'object' || typeof commit.sha !== 'string' || !commit.commit) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned invalid commit details.');
+      }
+      return mapCommitDetails(commit);
+    });
+  };
+
+  const getCommitActivity = async (userId, owner, repositoryName) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const result = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/stats/commit_activity`,
+        token,
+        fetchImpl,
+        returnResponse: true,
+      });
+
+      if (result.status === 202) {
+        const retryAfter = Number(result.headers.get('retry-after'));
+        return {
+          status: 'computing',
+          weeks: [],
+          ...(Number.isSafeInteger(retryAfter) && retryAfter >= 0 ? { retryAfterSeconds: retryAfter } : {}),
+        };
+      }
+      if (result.status === 204 || (result.status === 200 && Array.isArray(result.data) && result.data.length === 0)) {
+        return { status: 'unavailable', weeks: [] };
+      }
+      if (result.status !== 200 || !Array.isArray(result.data)) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned invalid commit activity data.');
+      }
+
+      return { status: 'ready', weeks: result.data.map(mapCommitActivityWeek) };
+    });
+  };
+
   const getRepository = async (userId, owner, repositoryName) => {
-    if (
-      typeof owner !== 'string'
-      || typeof repositoryName !== 'string'
-      || !/^[A-Za-z0-9_.-]+$/.test(owner)
-      || !/^[A-Za-z0-9_.-]+$/.test(repositoryName)
-      || owner === '.'
-      || owner === '..'
-      || repositoryName === '.'
-      || repositoryName === '..'
-    ) {
-      throw createHttpError(400, 'GITHUB_INVALID_REPOSITORY', 'A valid GitHub repository owner and name are required.');
-    }
+    validateRepositoryCoordinates(owner, repositoryName);
 
     const integration = await getInstallationForUser(userId);
     return withInstallationToken(integration.installationId, async (token) => {
@@ -339,6 +469,9 @@ const createGithubService = ({
     selectInstallation,
     disconnect,
     listRepositories,
+    listCommits,
+    getCommitDetails,
+    getCommitActivity,
     getRepository,
   };
 };

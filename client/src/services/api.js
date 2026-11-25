@@ -3,11 +3,12 @@ const configuredApiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost
 export const API_BASE_URL = configuredApiBase.replace(/\/+$/, '')
 
 export class ApiError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, retryAfter = null) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.retryAfter = retryAfter
   }
 }
 
@@ -42,7 +43,8 @@ export async function apiRequest(path, { method = 'GET', body, token, signal } =
       ? payload.error.message
       : 'The request could not be completed. Please try again.'
     const code = typeof payload?.error?.code === 'string' ? payload.error.code : 'REQUEST_FAILED'
-    throw new ApiError(response.status, code, message)
+    const retryAfter = Number(response.headers.get('retry-after'))
+    throw new ApiError(response.status, code, message, Number.isSafeInteger(retryAfter) && retryAfter >= 0 ? retryAfter : null)
   }
 
   if (payload?.success !== true || !payload.data || typeof payload.data !== 'object') {

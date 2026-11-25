@@ -16,6 +16,9 @@ const createGithubRouter = (dependencies = {}) => {
   router.get('/installations/pending', authenticate, controller.pendingInstallations);
   router.post('/installations/:installationId/select', authenticate, controller.selectInstallation);
   router.get('/repositories', authenticate, controller.listRepositories);
+  router.get('/repositories/:owner/:repo/commits', authenticate, controller.listCommits);
+  router.get('/repositories/:owner/:repo/commits/:sha', authenticate, controller.commitDetails);
+  router.get('/repositories/:owner/:repo/commit-activity', authenticate, controller.commitActivity);
   router.get('/repositories/:owner/:repo', authenticate, controller.repositoryDetails);
   router.delete('/connection', authenticate, controller.disconnect);
 

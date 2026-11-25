@@ -6,6 +6,7 @@ import './repositories.css'
 import { activity, languages, pullRequests, repositories as sampleRepositories } from './data/demo'
 import { useAuth } from './context/useAuth'
 import { useGithubRepositories } from './context/useGithubRepositories'
+import { useCommitIntelligence } from './context/useCommitIntelligence'
 import { getSafeAuthError } from './services/auth-errors'
 
 const paths = {
@@ -259,7 +260,7 @@ function PageHeader({ eyebrow, title, detail, action, className = '' }) {
   return <div className={`page-header ${className}`}><div><div className="page-eyebrow">{eyebrow}</div><h1>{title}</h1>{detail&&<p>{detail}</p>}</div>{action}</div>
 }
 
-function Overview({ navigate, openRepo, user, repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories }) {
+function Overview({ navigate, openRepo, user, repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedCommitRepository, onSelectCommitRepository, commitIntelligence }) {
   const firstName = user?.name?.trim().split(/\s+/)[0] || user?.email || 'there'
   const stats = useMemo(() => liveRepositories.reduce((total, repo) => ({
     total: total.total + 1,
@@ -293,6 +294,7 @@ function Overview({ navigate, openRepo, user, repositories: liveRepositories, re
     <div className="stat-grid repository-stat-grid"><StatCard label="Repositories" value={statValue(stats.total)} delta={statNote} icon="repo" tone="cyan"/><StatCard label="Public" value={statValue(stats.public)} delta="Live GitHub data" icon="globe" tone="green"/><StatCard label="Private" value={statValue(stats.private)} delta="Live GitHub data" icon="lock" tone="violet"/><StatCard label="Stars" value={statValue(stats.stars)} delta="Live GitHub data" icon="spark" tone="amber"/><StatCard label="Forks" value={statValue(stats.forks)} delta="Live GitHub data" icon="repo" tone="cyan"/></div>
     <div className="dashboard-grid"><section className="panel activity-panel"><div className="panel-heading"><div><h2>Engineering pulse</h2><p>Contribution activity · sample data</p></div><select aria-label="Activity time range" defaultValue="7 days"><option>7 days</option><option>30 days</option><option>90 days</option></select></div><ActivityChart compact/></section><section className="panel language-panel"><div className="panel-heading"><div><h2>Language mix</h2><p>Illustrative distribution · sample data</p></div><span className="prototype-label">SAMPLE</span></div><LanguageChart/><div className="language-legend">{languages.map((language)=><div key={language.name}><span><i style={{background:language.color}}/>{language.name}</span><b>{language.percent}%</b></div>)}</div></section></div>
     <div className="dashboard-grid overview-lower-grid"><section className="panel repositories-panel"><div className="panel-heading"><div><h2>Your repositories</h2><p>{repositoryStatus === 'success' ? 'Live GitHub App data · select a repository for details.' : 'Live GitHub App repositories'}</p></div><button className="panel-link" onClick={() => navigate('repositories')}>All repositories <Icon name="arrow" size={14}/></button></div>{repositoryStatus === 'success' && liveRepositories.length > 0 ? <div className="overview-repo-grid">{liveRepositories.slice(0,4).map((repo)=><OverviewRepoCard key={repo.id} repo={repo} openRepo={openRepo}/>)}</div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section><section className="panel activity-feed"><div className="panel-heading"><div><h2>Recent activity</h2><p>Sample workspace timeline</p></div><span className="prototype-label">SAMPLE</span></div><ActivityItem tone="violet" title="Review requested" detail="Sample event · PR #117" time="18m"/><ActivityItem tone="cyan" title="Repository indexed" detail="Sample event · repository" time="1h"/><ActivityItem tone="green" title="Pull request merged" detail="Sample event · PR #61" time="3h"/><ActivityItem tone="amber" title="Health score improved" detail="Sample event" time="Yesterday"/></section></div>
+    <CommitIntelligencePanel repositories={liveRepositories} repositoryStatus={repositoryStatus} repositoryError={repositoryError} retryRepositories={retryRepositories} selectedRepository={selectedCommitRepository} onSelectRepository={onSelectCommitRepository} intelligence={commitIntelligence}/>
     <div className="dashboard-grid overview-insights-grid"><section className="panel code-summary-panel"><div className="panel-heading"><div><h2>Code review overview</h2><p>Sample pull request signals</p></div><button className="panel-link" onClick={() => navigate('code-reviews')}>Review queue <Icon name="arrow" size={14}/></button></div><div className="review-summary-meter"><div className="review-summary-ring"><strong>08</strong><span>OPEN</span></div><div className="review-summary-copy"><b>Moving at a healthy pace</b><span>3 ready · 3 in review · 2 need attention</span><div className="review-summary-bar"><i/></div></div></div><div className="review-summary-list"><span><i className="review-dot violet"/> In review <b>03</b></span><span><i className="review-dot green"/> Ready to merge <b>03</b></span><span><i className="review-dot amber"/> Needs attention <b>02</b></span></div></section><section className="panel productivity-panel"><div className="productivity-heading"><span className="productivity-icon"><Icon name="bolt" size={18}/></span><span className="section-index">TEAM MOMENTUM · SAMPLE</span></div><p>A little less waiting.<br/><strong>A little more making.</strong></p><div className="productivity-metrics"><div><span>AVG. REVIEW TIME</span><b>4.2h</b></div><div><span>WEEKLY MOMENTUM</span><b>+18%</b></div></div><div className="productivity-sparkline" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div></section></div>
     <div className="demo-disclaimer"><Icon name="spark" size={14}/> Repository counts, visibility, stars and forks above come from GitHub. Review, productivity, activity and language panels are sample data.</div>
   </>
@@ -337,6 +339,66 @@ function RepositoryFeedback({ status, error, retry, empty = false }) {
       ? 'NEBULITH could not reach the server. Check your connection and try again.'
       : error?.message || 'The repository request failed. Try again in a moment.'
   return <div className="repository-error" role="alert"><span className="repository-error-icon"><Icon name={disconnected ? 'github' : 'spark'} size={19}/></span><b>{title}</b><p>{detail}</p><Button kind="secondary" onClick={retry}>Retry repository load <Icon name="arrow" size={14}/></Button></div>
+}
+
+function getCommitErrorMessage(error) {
+  if (error?.code === 'GITHUB_RATE_LIMITED') return Number.isSafeInteger(error.retryAfter)
+    ? `GitHub rate limit reached. Retry in about ${error.retryAfter} seconds.`
+    : 'GitHub rate limit reached. Wait briefly, then retry.'
+  if (error?.code === 'GITHUB_NOT_CONNECTED') return 'Connect a GitHub App installation to load commit intelligence.'
+  if (error?.status === 0) return 'NEBULITH could not reach the server. Check your connection and retry.'
+  return error?.message || 'Commit data could not be loaded. Try again.'
+}
+
+function formatCommitDate(value, options = { dateStyle: 'medium', timeStyle: 'short' }) {
+  if (typeof value !== 'string' || !value) return 'Date unavailable'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? 'Date unavailable' : new Intl.DateTimeFormat(undefined, options).format(date)
+}
+
+function CommitIntelligencePanel({ repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedRepository, onSelectRepository, intelligence }) {
+  return <section className="panel commit-intelligence-panel"><div className="commit-panel-heading"><div><span className="section-index">REPOSITORY INTELLIGENCE</span><h2>Commit intelligence</h2><p>Explore real commit history and GitHub’s weekly activity for one repository.</p></div>{liveRepositories.length > 0&&<label className="commit-repository-picker"><span>Repository</span><select value={selectedRepository ? String(selectedRepository.id) : ''} onChange={(event)=>onSelectRepository(liveRepositories.find((repo)=>String(repo.id)===event.target.value)?.id)} aria-label="Choose repository for commit intelligence">{liveRepositories.map((repo)=><option value={String(repo.id)} key={repo.id}>{repo.fullName}</option>)}</select></label>}</div>{selectedRepository ? <div className="commit-intelligence-columns"><CommitActivityChart intelligence={intelligence} repositoryName={selectedRepository.fullName}/><CommitHistory intelligence={intelligence} repositoryName={selectedRepository.fullName} compact/></div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section>
+}
+
+function CommitActivityChart({ intelligence, repositoryName }) {
+  const [period, setPeriod] = useState(13)
+  const allWeeks = [...intelligence.weeks].sort((a, b) => a.week - b.week)
+  const weeks = allWeeks.slice(-period)
+  const total = weeks.reduce((sum, week) => sum + week.total, 0)
+  const maximum = Math.max(0, ...weeks.map((week) => week.total))
+  const latest = weeks.at(-1)
+  const previous = weeks.at(-2)
+  const title = (week) => formatCommitDate(new Date(week.week * 1000).toISOString(), { month: 'short', day: 'numeric', timeZone: 'UTC' })
+
+  return <section className="commit-activity-card" aria-labelledby="commit-activity-title"><div className="commit-section-heading"><div><h3 id="commit-activity-title">Weekly commit activity</h3><p>{repositoryName}</p></div>{intelligence.activityStatus === 'ready'&&allWeeks.length > 0&&<label className="commit-period-picker"><span className="sr-only">Activity period</span><select value={period} onChange={(event)=>setPeriod(Number(event.target.value))} aria-label="Commit activity period"><option value={1}>1 week · 7 days</option><option value={4}>4 weeks · 28 days</option><option value={13}>13 weeks · 91 days</option><option value={52}>52 weeks · 1 year</option></select></label>}</div>
+    {intelligence.activityStatus === 'loading'&&<div className="commit-chart-skeleton" role="status" aria-label="Loading commit activity"><i/><i/><i/><i/><i/><i/><i/><i/></div>}
+    {intelligence.activityStatus === 'error'&&<div className="commit-inline-error" role="alert"><p>{getCommitErrorMessage(intelligence.activityError)}</p><Button kind="secondary" onClick={intelligence.retryActivity}>Retry activity</Button></div>}
+    {intelligence.activityStatus === 'computing'&&<div className="commit-activity-notice" role="status"><Icon name="clock" size={17}/><span>GitHub is preparing repository statistics. Wait a little, then ask for an update.</span><Button kind="secondary" onClick={intelligence.retryActivity}>Check again</Button></div>}
+    {intelligence.activityStatus === 'unavailable'&&<div className="commit-activity-notice" role="status"><Icon name="chart" size={17}/><span>GitHub did not provide activity statistics. This is unavailable data, not a zero-commit result.</span><Button kind="secondary" onClick={intelligence.retryActivity}>Try statistics again</Button></div>}
+    {intelligence.activityStatus === 'ready'&&allWeeks.length===0&&<div className="commit-activity-notice" role="status"><Icon name="chart" size={17}/><span>No weekly activity buckets were returned, so this period cannot be summarized.</span></div>}
+    {intelligence.activityStatus === 'ready'&&weeks.length>0&&<><div className="commit-chart-summary"><b>{total.toLocaleString()} commits</b><span>across {weeks.length} weekly buckets · Sunday–Saturday · {period === 52 ? 'up to one year' : `up to ${period * 7} days`}</span></div><div className="commit-chart-scroll"><div className="commit-chart-bars" role="img" aria-label={`${total} commits across ${weeks.length} weekly buckets for ${repositoryName}`}>
+      {weeks.map((week)=><span className="commit-chart-week" key={week.week} title={`Week of ${title(week)}: ${week.total} commits`}><i style={{height:`${maximum===0?2:Math.max(5,(week.total/maximum)*100)}%`}}/><small>{title(week)}</small></span>)}
+    </div></div><div className="commit-trend-note">{latest&&previous ? <>Latest week: <b>{latest.total.toLocaleString()}</b> · previous week: <b>{previous.total.toLocaleString()}</b></> : 'One weekly bucket is available; there is no prior week to compare.'}</div></>}
+  </section>
+}
+
+function CommitHistory({ intelligence, repositoryName, compact = false }) {
+  const commits = compact ? intelligence.commits.slice(0, 5) : intelligence.commits
+  return <section className={`commit-history-card ${compact ? 'commit-history-compact' : ''}`} aria-labelledby={compact ? 'overview-commit-history-title' : 'repository-commit-history-title'}><div className="commit-section-heading"><div><h3 id={compact ? 'overview-commit-history-title' : 'repository-commit-history-title'}>Recent commits</h3><p>{repositoryName}</p></div><span className="commit-live-label"><i/> LIVE</span></div>
+    {intelligence.commitsStatus === 'loading'&&<div className="commit-history-skeleton" role="status" aria-label="Loading commit history"><i/><i/><i/><i/></div>}
+    {intelligence.commitsStatus === 'error'&&<div className="commit-inline-error" role="alert"><p>{getCommitErrorMessage(intelligence.commitsError)}</p><Button kind="secondary" onClick={intelligence.retryHistory}>Retry commit history</Button></div>}
+    {intelligence.commitsStatus === 'success'&&intelligence.commits.length===0&&<div className="commit-history-empty"><Icon name="code" size={19}/><b>No commits were returned</b><span>This repository has no commit history available to this installation.</span></div>}
+    {intelligence.commitsStatus === 'success'&&commits.length>0&&<div className="commit-list">{commits.map((commit)=>{
+      const expanded = intelligence.selectedSha === commit.sha
+      const githubUrl = getSafeGithubUrl(commit.url)
+      const summary = typeof commit.message === 'string' ? commit.message.split(/\r?\n/, 1)[0] : 'Commit message unavailable'
+      return <article className={`commit-entry ${expanded ? 'is-expanded' : ''}`} key={commit.sha}><div className="commit-entry-main"><button className="commit-message-button" onClick={()=>expanded?intelligence.closeCommitDetails():intelligence.selectCommit(commit.sha)} aria-expanded={expanded}><b title={summary}>{summary}</b><span>{commit.author || 'Author unavailable'}<i>·</i>{formatCommitDate(commit.date)}</span></button><code title={commit.sha}>{typeof commit.sha === 'string' ? commit.sha.slice(0,7) : 'SHA unavailable'}</code>{githubUrl&&<a href={githubUrl} target="_blank" rel="noopener noreferrer" className="commit-github-link" aria-label={`Open commit ${commit.sha} on GitHub`}><Icon name="external" size={13}/></a>}</div>
+        {expanded&&<div className="commit-details-panel">{intelligence.detailsStatus==='loading'&&<span className="commit-detail-loading" role="status">Loading commit details…</span>}{intelligence.detailsStatus==='error'&&<div className="commit-inline-error" role="alert"><p>{getCommitErrorMessage(intelligence.detailsError)}</p><Button kind="secondary" onClick={()=>intelligence.selectCommit(commit.sha)}>Retry details</Button></div>}{intelligence.detailsStatus==='success'&&intelligence.details&&<><p className="commit-full-message">{intelligence.details.message || 'Commit message unavailable'}</p>{intelligence.details.stats ? <div className="commit-diff-stats"><span><b>+{intelligence.details.stats.additions.toLocaleString()}</b> additions</span><span><b>−{intelligence.details.stats.deletions.toLocaleString()}</b> deletions</span></div> : <span className="commit-no-stats">GitHub did not provide line-change statistics for this commit.</span>}</>}</div>}
+      </article>
+    })}</div>}
+    {intelligence.commitsStatus==='success'&&intelligence.hasNext&&<div className="commit-load-more"><Button kind="secondary" disabled={intelligence.loadingMore} onClick={intelligence.loadMore}>{intelligence.loadingMore?'Loading more commits…':'Load more commits'}</Button>{intelligence.loadingMore&&<span className="auth-spinner" aria-hidden="true"/>}</div>}
+    {intelligence.loadMoreError&&<div className="commit-load-more-error" role="alert">{getCommitErrorMessage(intelligence.loadMoreError)} <button onClick={intelligence.loadMore}>Retry</button></div>}
+  </section>
 }
 
 function parseMetric(value) {
@@ -468,7 +530,7 @@ function Preference({title,detail,checked,onChange}) {
   return <div className="preference-row"><div><b>{title}</b><span>{detail}</span></div><button role="switch" aria-checked={checked} className={`toggle ${checked?'on':''}`} onClick={onChange} aria-label={title}><i/></button></div>
 }
 
-function RepositoryModal({ repo, close }) {
+function RepositoryModal({ repo, close, commitIntelligence }) {
   useEffect(() => {
     if (!repo) return undefined
     const handleKeydown = (event) => {
@@ -480,7 +542,7 @@ function RepositoryModal({ repo, close }) {
 
   if (!repo) return null
   const githubUrl = getSafeGithubUrl(repo.url)
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event)=>{if(event.target===event.currentTarget)close()}}><section className="repo-modal" role="dialog" aria-modal="true" aria-labelledby="repo-modal-title"><button className="modal-close" onClick={close} aria-label="Close repository details"><Icon name="close"/></button><div className="modal-repo-icon"><Icon name="repo" size={21}/></div><span className="eyebrow">{repo.fullName}</span><h2 id="repo-modal-title">{repo.name}</h2><p>{repo.description || 'No description provided.'}</p><div className="modal-meta"><RepositoryVisibility visibility={repo.visibility}/>{repo.primaryLanguage&&<span>{repo.primaryLanguage}</span>}<span>✧ {formatCount(repo.stars)} stars</span><span>⑂ {formatCount(repo.forks)} forks</span></div><div className="repository-detail-facts"><div><span>Last updated</span><b>{formatRepositoryDate(repo.updatedAt)}</b></div>{repo.defaultBranch&&<div><span>Default branch</span><b>{repo.defaultBranch}</b></div>}</div><div className="modal-actions">{githubUrl&&<a className="button button-secondary modal-github" href={githubUrl} target="_blank" rel="noopener noreferrer"><Icon name="github" size={15}/> Open on GitHub <Icon name="external" size={13}/></a>}<button className="button button-secondary modal-done" onClick={close}>Done <Icon name="check" size={15}/></button></div></section></div>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event)=>{if(event.target===event.currentTarget)close()}}><section className="repo-modal" role="dialog" aria-modal="true" aria-labelledby="repo-modal-title"><button className="modal-close" onClick={close} aria-label="Close repository details"><Icon name="close"/></button><div className="modal-repo-icon"><Icon name="repo" size={21}/></div><span className="eyebrow">{repo.fullName}</span><h2 id="repo-modal-title">{repo.name}</h2><p>{repo.description || 'No description provided.'}</p><div className="modal-meta"><RepositoryVisibility visibility={repo.visibility}/>{repo.primaryLanguage&&<span>{repo.primaryLanguage}</span>}<span>✧ {formatCount(repo.stars)} stars</span><span>⑂ {formatCount(repo.forks)} forks</span></div><div className="repository-detail-facts"><div><span>Last updated</span><b>{formatRepositoryDate(repo.updatedAt)}</b></div>{repo.defaultBranch&&<div><span>Default branch</span><b>{repo.defaultBranch}</b></div>}</div><div className="modal-actions">{githubUrl&&<a className="button button-secondary modal-github" href={githubUrl} target="_blank" rel="noopener noreferrer"><Icon name="github" size={15}/> Open on GitHub <Icon name="external" size={13}/></a>}<button className="button button-secondary modal-done" onClick={close}>Done <Icon name="check" size={15}/></button></div><div className="repository-modal-commit-history"><CommitHistory intelligence={commitIntelligence} repositoryName={repo.fullName}/></div></section></div>
 }
 
 function getSafeGithubUrl(value) {
@@ -496,9 +558,24 @@ function getSafeGithubUrl(value) {
 function App() {
   const [page,setPage] = useState('landing')
   const [selectedRepo,setSelectedRepo] = useState(null)
+  const [commitRepositoryId,setCommitRepositoryId] = useState(null)
   const [returnPage,setReturnPage] = useState('overview')
   const { user, status, authMessage, restoreError, storageWarning, logout, retrySession, clearMessages } = useAuth()
   const githubRepositories = useGithubRepositories(status === 'authenticated')
+  const visiblePage = status === 'anonymous' && authMessage
+    ? 'login'
+    : status === 'authenticated' && (page === 'login' || page === 'register')
+      ? returnPage
+      : page
+  const selectedCommitRepository = githubRepositories.repositories.find((repo) => String(repo.id) === String(commitRepositoryId))
+    || githubRepositories.repositories[0]
+    || null
+  const commitIntelligence = useCommitIntelligence(
+    status === 'authenticated'
+      && Boolean(selectedCommitRepository)
+      && (visiblePage === 'overview' || Boolean(selectedRepo)),
+    selectedCommitRepository,
+  )
   const workspacePages = ['overview', 'repositories', 'code-reviews', 'analytics', 'settings']
   const navigate=(next)=>{
     if (workspacePages.includes(next) && status !== 'authenticated') {
@@ -509,15 +586,14 @@ function App() {
     }
     window.scrollTo({top:0,behavior:'smooth'})
   }
-  const visiblePage = status === 'anonymous' && authMessage
-    ? 'login'
-    : status === 'authenticated' && (page === 'login' || page === 'register')
-      ? returnPage
-      : page
   const handleLogout = () => {
     logout()
     setSelectedRepo(null)
     setPage('landing')
+  }
+  const openRepository = (repository) => {
+    setCommitRepositoryId(repository.id)
+    setSelectedRepo(repository)
   }
   if (status === 'checking') return <AuthLoadingScreen/>
   if (status === 'unavailable') return <SessionRecovery message={restoreError} retrySession={retrySession} isChecking={false} onSignIn={() => { logout(); clearMessages(); setPage('login') }}/>
@@ -525,12 +601,12 @@ function App() {
   if(visiblePage==='login'||visiblePage==='register') return <AuthPage mode={visiblePage} navigate={navigate}/>
   if (status !== 'authenticated') return <AuthPage mode="login" navigate={navigate}/>
   let view
-  if(visiblePage==='overview') view=<Overview navigate={navigate} openRepo={setSelectedRepo} user={user} repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry}/>
-  else if(visiblePage==='repositories') view=<Repositories repositories={githubRepositories.repositories} status={githubRepositories.status} error={githubRepositories.error} retry={githubRepositories.retry} openRepo={setSelectedRepo}/>
+  if(visiblePage==='overview') view=<Overview navigate={navigate} openRepo={openRepository} user={user} repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry} selectedCommitRepository={selectedCommitRepository} onSelectCommitRepository={setCommitRepositoryId} commitIntelligence={commitIntelligence}/>
+  else if(visiblePage==='repositories') view=<Repositories repositories={githubRepositories.repositories} status={githubRepositories.status} error={githubRepositories.error} retry={githubRepositories.retry} openRepo={openRepository}/>
   else if(visiblePage==='code-reviews') view=<Reviews/>
   else if(visiblePage==='analytics') view=<Analytics/>
   else view=<Settings user={user} repositoryStatus={githubRepositories.status}/>
-  return <><AppShell page={visiblePage} navigate={navigate} user={user} onLogout={handleLogout} storageWarning={storageWarning} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error}>{view}</AppShell><RepositoryModal repo={selectedRepo} close={()=>setSelectedRepo(null)}/></>
+  return <><AppShell page={visiblePage} navigate={navigate} user={user} onLogout={handleLogout} storageWarning={storageWarning} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error}>{view}</AppShell><RepositoryModal repo={selectedRepo} close={()=>setSelectedRepo(null)} commitIntelligence={commitIntelligence}/></>
 }
 
 export default App

@@ -53,7 +53,7 @@ const mapGithubError = (response) => {
   return createHttpError(502, 'GITHUB_REQUEST_FAILED', 'The GitHub request could not be completed.');
 };
 
-const requestGithubApi = async ({ path, token, method = 'GET', body, fetchImpl = globalThis.fetch }) => {
+const requestGithubApi = async ({ path, token, method = 'GET', body, fetchImpl = globalThis.fetch, returnResponse = false }) => {
   if (typeof fetchImpl !== 'function') {
     throw createHttpError(503, 'FETCH_UNAVAILABLE', 'GitHub integration requires a Node.js runtime with fetch support.');
   }
@@ -82,6 +82,13 @@ const requestGithubApi = async ({ path, token, method = 'GET', body, fetchImpl =
 
   if (!response.ok) {
     throw mapGithubError(response);
+  }
+
+  if (returnResponse) {
+    if (response.status === 204 || response.status === 202) {
+      return { status: response.status, data: null, headers: response.headers };
+    }
+    return { status: response.status, data: await parseJson(response), headers: response.headers };
   }
 
   return parseJson(response);
