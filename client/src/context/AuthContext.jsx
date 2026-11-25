@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react'
 import { AuthContext } from './auth-context'
+import { ApiError, apiRequest } from '../services/api'
 import { authApi } from '../services/auth-api'
 
 const TOKEN_STORAGE_KEY = 'nebulith.auth.token'
@@ -171,6 +172,18 @@ export function AuthProvider({ children }) {
   }, [])
 
   const clearMessages = useCallback(() => dispatch({ type: 'CLEAR_MESSAGES' }), [])
+  const authenticatedRequest = useCallback(async (path, options = {}) => {
+    if (!state.token) throw new ApiError(401, 'UNAUTHORIZED', 'Sign in again to continue.')
+    try {
+      return await apiRequest(path, { ...options, token: state.token })
+    } catch (error) {
+      if (error.status === 401) {
+        removeStoredToken()
+        dispatch({ type: 'EXPIRED' })
+      }
+      throw error
+    }
+  }, [state.token])
 
   const value = useMemo(() => ({
     user: state.user,
@@ -183,7 +196,8 @@ export function AuthProvider({ children }) {
     logout,
     retrySession,
     clearMessages,
-  }), [state, login, register, logout, retrySession, clearMessages])
+    authenticatedRequest,
+  }), [state, login, register, logout, retrySession, clearMessages, authenticatedRequest])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
