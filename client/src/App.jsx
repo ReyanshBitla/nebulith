@@ -7,6 +7,7 @@ import { activity, languages, pullRequests, repositories as sampleRepositories }
 import { useAuth } from './context/useAuth'
 import { useGithubRepositories } from './context/useGithubRepositories'
 import { useCommitIntelligence } from './context/useCommitIntelligence'
+import { useLanguageIntelligence } from './context/useLanguageIntelligence'
 import { getSafeAuthError } from './services/auth-errors'
 
 const paths = {
@@ -260,7 +261,7 @@ function PageHeader({ eyebrow, title, detail, action, className = '' }) {
   return <div className={`page-header ${className}`}><div><div className="page-eyebrow">{eyebrow}</div><h1>{title}</h1>{detail&&<p>{detail}</p>}</div>{action}</div>
 }
 
-function Overview({ navigate, openRepo, user, repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedCommitRepository, onSelectCommitRepository, commitIntelligence }) {
+function Overview({ navigate, openRepo, user, repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedCommitRepository, onSelectCommitRepository, commitIntelligence, languageIntelligence }) {
   const firstName = user?.name?.trim().split(/\s+/)[0] || user?.email || 'there'
   const stats = useMemo(() => liveRepositories.reduce((total, repo) => ({
     total: total.total + 1,
@@ -292,11 +293,12 @@ function Overview({ navigate, openRepo, user, repositories: liveRepositories, re
     <PageHeader className="overview-page-header" eyebrow="YOUR WORKSPACE" title={`Good morning, ${firstName}`} detail="A live view of your repositories, alongside clearly marked workspace previews." action={<Button kind="secondary" onClick={() => navigate('repositories')}><Icon name="github" size={16}/> View repositories</Button>}/>
     <div className={`connection-banner ${connected ? 'repository-connected' : !isLoading ? 'repository-disconnected' : ''}`}><div className="connected-mark"><Icon name="github" size={18}/></div><div><b>{connectionTitle}</b><span>{connectionMessage}</span></div><span className="connected-status"><i/>{connected ? ' Live' : isLoading ? ' Loading' : ' Check'}</span>{!connected&&!isLoading&&<button className="banner-arrow" onClick={retryRepositories} aria-label="Retry GitHub repository connection"><Icon name="arrow" size={16}/></button>}</div>
     <div className="stat-grid repository-stat-grid"><StatCard label="Repositories" value={statValue(stats.total)} delta={statNote} icon="repo" tone="cyan"/><StatCard label="Public" value={statValue(stats.public)} delta="Live GitHub data" icon="globe" tone="green"/><StatCard label="Private" value={statValue(stats.private)} delta="Live GitHub data" icon="lock" tone="violet"/><StatCard label="Stars" value={statValue(stats.stars)} delta="Live GitHub data" icon="spark" tone="amber"/><StatCard label="Forks" value={statValue(stats.forks)} delta="Live GitHub data" icon="repo" tone="cyan"/></div>
-    <div className="dashboard-grid"><section className="panel activity-panel"><div className="panel-heading"><div><h2>Engineering pulse</h2><p>Contribution activity · sample data</p></div><select aria-label="Activity time range" defaultValue="7 days"><option>7 days</option><option>30 days</option><option>90 days</option></select></div><ActivityChart compact/></section><section className="panel language-panel"><div className="panel-heading"><div><h2>Language mix</h2><p>Illustrative distribution · sample data</p></div><span className="prototype-label">SAMPLE</span></div><LanguageChart/><div className="language-legend">{languages.map((language)=><div key={language.name}><span><i style={{background:language.color}}/>{language.name}</span><b>{language.percent}%</b></div>)}</div></section></div>
+    <div className="dashboard-grid overview-pulse-grid"><section className="panel activity-panel"><div className="panel-heading"><div><h2>Engineering pulse</h2><p>Contribution activity · sample data</p></div><select aria-label="Activity time range" defaultValue="7 days"><option>7 days</option><option>30 days</option><option>90 days</option></select></div><ActivityChart compact/></section></div>
+    <LanguageIntelligencePanel intelligence={languageIntelligence}/>
     <div className="dashboard-grid overview-lower-grid"><section className="panel repositories-panel"><div className="panel-heading"><div><h2>Your repositories</h2><p>{repositoryStatus === 'success' ? 'Live GitHub App data · select a repository for details.' : 'Live GitHub App repositories'}</p></div><button className="panel-link" onClick={() => navigate('repositories')}>All repositories <Icon name="arrow" size={14}/></button></div>{repositoryStatus === 'success' && liveRepositories.length > 0 ? <div className="overview-repo-grid">{liveRepositories.slice(0,4).map((repo)=><OverviewRepoCard key={repo.id} repo={repo} openRepo={openRepo}/>)}</div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section><section className="panel activity-feed"><div className="panel-heading"><div><h2>Recent activity</h2><p>Sample workspace timeline</p></div><span className="prototype-label">SAMPLE</span></div><ActivityItem tone="violet" title="Review requested" detail="Sample event · PR #117" time="18m"/><ActivityItem tone="cyan" title="Repository indexed" detail="Sample event · repository" time="1h"/><ActivityItem tone="green" title="Pull request merged" detail="Sample event · PR #61" time="3h"/><ActivityItem tone="amber" title="Health score improved" detail="Sample event" time="Yesterday"/></section></div>
     <CommitIntelligencePanel repositories={liveRepositories} repositoryStatus={repositoryStatus} repositoryError={repositoryError} retryRepositories={retryRepositories} selectedRepository={selectedCommitRepository} onSelectRepository={onSelectCommitRepository} intelligence={commitIntelligence}/>
     <div className="dashboard-grid overview-insights-grid"><section className="panel code-summary-panel"><div className="panel-heading"><div><h2>Code review overview</h2><p>Sample pull request signals</p></div><button className="panel-link" onClick={() => navigate('code-reviews')}>Review queue <Icon name="arrow" size={14}/></button></div><div className="review-summary-meter"><div className="review-summary-ring"><strong>08</strong><span>OPEN</span></div><div className="review-summary-copy"><b>Moving at a healthy pace</b><span>3 ready · 3 in review · 2 need attention</span><div className="review-summary-bar"><i/></div></div></div><div className="review-summary-list"><span><i className="review-dot violet"/> In review <b>03</b></span><span><i className="review-dot green"/> Ready to merge <b>03</b></span><span><i className="review-dot amber"/> Needs attention <b>02</b></span></div></section><section className="panel productivity-panel"><div className="productivity-heading"><span className="productivity-icon"><Icon name="bolt" size={18}/></span><span className="section-index">TEAM MOMENTUM · SAMPLE</span></div><p>A little less waiting.<br/><strong>A little more making.</strong></p><div className="productivity-metrics"><div><span>AVG. REVIEW TIME</span><b>4.2h</b></div><div><span>WEEKLY MOMENTUM</span><b>+18%</b></div></div><div className="productivity-sparkline" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div></section></div>
-    <div className="demo-disclaimer"><Icon name="spark" size={14}/> Repository counts, visibility, stars and forks above come from GitHub. Review, productivity, activity and language panels are sample data.</div>
+    <div className="demo-disclaimer"><Icon name="spark" size={14}/> Repository counts, visibility, stars, forks, commit history and language bytes above come from GitHub. Review, productivity, contribution activity and recent event panels remain sample data.</div>
   </>
 }
 
@@ -358,6 +360,56 @@ function formatCommitDate(value, options = { dateStyle: 'medium', timeStyle: 'sh
 
 function CommitIntelligencePanel({ repositories: liveRepositories, repositoryStatus, repositoryError, retryRepositories, selectedRepository, onSelectRepository, intelligence }) {
   return <section className="panel commit-intelligence-panel"><div className="commit-panel-heading"><div><span className="section-index">REPOSITORY INTELLIGENCE</span><h2>Commit intelligence</h2><p>Explore real commit history and GitHub’s weekly activity for one repository.</p></div>{liveRepositories.length > 0&&<label className="commit-repository-picker"><span>Repository</span><select value={selectedRepository ? String(selectedRepository.id) : ''} onChange={(event)=>onSelectRepository(liveRepositories.find((repo)=>String(repo.id)===event.target.value)?.id)} aria-label="Choose repository for commit intelligence">{liveRepositories.map((repo)=><option value={String(repo.id)} key={repo.id}>{repo.fullName}</option>)}</select></label>}</div>{selectedRepository ? <div className="commit-intelligence-columns"><CommitActivityChart intelligence={intelligence} repositoryName={selectedRepository.fullName}/><CommitHistory intelligence={intelligence} repositoryName={selectedRepository.fullName} compact/></div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section>
+}
+
+const LANGUAGE_COLORS = ['#a89aff', '#63c4d4', '#d48ad6', '#7fc69a', '#e0b875', '#7d92df', '#d97e9f', '#9aa8bb']
+
+function getLanguageColor(name) {
+  const index = [...name].reduce((sum, character) => sum + character.codePointAt(0), 0) % LANGUAGE_COLORS.length
+  return LANGUAGE_COLORS[index]
+}
+
+function formatLanguagePercentage(value) {
+  if (value > 0 && value < 0.01) return '<0.01%'
+  return `${Number(value.toFixed(2))}%`
+}
+
+function formatLanguageBytes(value) {
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unit = 0
+  while (size >= 1000 && unit < units.length - 1) {
+    size /= 1000
+    unit += 1
+  }
+  return unit === 0 ? `${value.toLocaleString()} bytes` : `${size.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${units[unit]}`
+}
+
+function LanguageIntelligencePanel({ intelligence }) {
+  const [selectedRepository, setSelectedRepository] = useState('all')
+  const data = intelligence.data
+  const selected = data?.repositories.find((repository) => repository.fullName === selectedRepository)
+  const languages = data?.aggregate.languages || []
+  const totalBytes = data?.aggregate.totalBytes || 0
+  const segments = languages.reduce((result, language) => {
+    const start = result.offset
+    const end = start + language.percentage
+    result.parts.push(`${getLanguageColor(language.name)} ${start}% ${end}%`)
+    result.offset = end
+    return result
+  }, { offset: 0, parts: [] }).parts.join(', ')
+
+  return <section className="panel language-intelligence-panel"><div className="language-intelligence-heading"><div><span className="section-index">REPOSITORY INTELLIGENCE</span><h2>Language intelligence</h2><p>GitHub’s language byte attribution across your installed repositories.</p></div><span className="commit-live-label"><i/> LIVE</span></div>
+    {intelligence.status === 'loading'&&<div className="language-intelligence-skeleton" role="status" aria-label="Loading GitHub language data"><i/><i/><i/><i/><i/></div>}
+    {intelligence.status === 'error'&&<div className="language-intelligence-feedback" role="alert"><span className="language-feedback-mark"><Icon name="chart" size={18}/></span><b>{intelligence.error?.code === 'GITHUB_NOT_CONNECTED' ? 'Connect GitHub to load language intelligence' : 'Language data could not be loaded'}</b><p>{intelligence.error?.code === 'GITHUB_RATE_LIMITED' ? 'GitHub rate limit reached. Wait briefly, then retry.' : intelligence.error?.code === 'GITHUB_NOT_CONNECTED' ? 'Connect an installed GitHub App in Settings, then retry.' : intelligence.error?.status === 0 ? 'NEBULITH could not reach the server. Check your connection and retry.' : intelligence.error?.message || 'The GitHub language request failed. Try again.'}</p><Button kind="secondary" onClick={intelligence.retry}>Retry language data</Button></div>}
+    {intelligence.status === 'success'&&totalBytes === 0&&<div className="language-intelligence-feedback"><span className="language-feedback-mark"><Icon name="code" size={18}/></span><b>No language bytes are available</b><p>GitHub returned no language attribution for the accessible repositories.</p></div>}
+    {intelligence.status === 'success'&&totalBytes > 0&&<>
+      <div className="language-intelligence-summary"><div><span>AGGREGATE SOURCE</span><b>{data.repositories.length.toLocaleString()} repositories</b></div><div><span>LANGUAGE BYTES</span><b>{formatLanguageBytes(totalBytes)}</b><small>{totalBytes.toLocaleString()} bytes</small></div><div><span>LANGUAGES</span><b>{languages.length.toLocaleString()}</b></div></div>
+      <div className="language-intelligence-grid"><section className="language-distribution-block"><div className="language-subheading"><h3>Overall distribution</h3><span>Share of aggregate language bytes</span></div><div className="language-distribution-content"><div className="language-live-donut" role="img" aria-label={`Language distribution across ${data.repositories.length} repositories, total ${totalBytes.toLocaleString()} bytes`} style={{ background: `conic-gradient(${segments})` }}><div><b>{languages.length}</b><span>languages</span></div></div><div className="language-ranking" aria-label="Language ranking">{languages.map((language) => <div className="language-ranking-row" key={language.name} title={`${language.name}: ${language.bytes.toLocaleString()} bytes, ${formatLanguagePercentage(language.percentage)}, used in ${language.repositoryCount} repositories`}><div className="language-ranking-label"><span><i style={{ background: getLanguageColor(language.name) }}/>{language.name}</span><b>{formatLanguagePercentage(language.percentage)}</b></div><div className="language-ranking-track"><i style={{ width: `${language.percentage}%`, background: getLanguageColor(language.name) }}/></div><small>{formatLanguageBytes(language.bytes)} · {language.bytes.toLocaleString()} bytes · {language.repositoryCount} {language.repositoryCount === 1 ? 'repository' : 'repositories'}</small></div>)}</div></div></section>
+        <section className="repository-language-block"><div className="language-subheading"><div><h3>Repository breakdown</h3><span>Per-repository byte shares</span></div><label><span className="sr-only">Choose a repository language breakdown</span><select value={selectedRepository} onChange={(event) => setSelectedRepository(event.target.value)} aria-label="Select repository for language breakdown"><option value="all">Choose repository…</option>{data.repositories.map((repository) => <option value={repository.fullName} key={repository.id}>{repository.fullName}</option>)}</select></label></div>{selected ? selected.languages.length > 0 ? <><div className="repository-language-total"><b>{selected.fullName}</b><span>{formatLanguageBytes(selected.totalBytes)} · {selected.totalBytes.toLocaleString()} bytes</span></div><div className="repository-language-list">{selected.languages.map((language) => <div className="repository-language-row" key={language.name} title={`${language.bytes.toLocaleString()} bytes · ${formatLanguagePercentage(language.percentage)}`}><span><i style={{ background: getLanguageColor(language.name) }}/>{language.name}</span><div className="language-ranking-track"><i style={{ width: `${language.percentage}%`, background: getLanguageColor(language.name) }}/></div><b>{formatLanguagePercentage(language.percentage)}</b><small>{formatLanguageBytes(language.bytes)} · {language.bytes.toLocaleString()} bytes</small></div>)}</div></> : <div className="repository-language-empty"><b>No language attribution</b><span>GitHub returned no language bytes for {selected.fullName}.</span></div> : <div className="repository-language-empty"><b>Select a repository</b><span>Inspect its language byte totals and share of repository language bytes.</span></div>}</section></div>
+      <p className="language-attribution-note"><Icon name="spark" size={13}/>{data.attribution || 'GitHub language byte attribution is approximate and does not measure developer effort.'}</p>
+    </>}
+  </section>
 }
 
 function CommitActivityChart({ intelligence, repositoryName }) {
@@ -576,6 +628,7 @@ function App() {
       && (visiblePage === 'overview' || Boolean(selectedRepo)),
     selectedCommitRepository,
   )
+  const languageIntelligence = useLanguageIntelligence(status === 'authenticated' && visiblePage === 'overview')
   const workspacePages = ['overview', 'repositories', 'code-reviews', 'analytics', 'settings']
   const navigate=(next)=>{
     if (workspacePages.includes(next) && status !== 'authenticated') {
@@ -601,7 +654,7 @@ function App() {
   if(visiblePage==='login'||visiblePage==='register') return <AuthPage mode={visiblePage} navigate={navigate}/>
   if (status !== 'authenticated') return <AuthPage mode="login" navigate={navigate}/>
   let view
-  if(visiblePage==='overview') view=<Overview navigate={navigate} openRepo={openRepository} user={user} repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry} selectedCommitRepository={selectedCommitRepository} onSelectCommitRepository={setCommitRepositoryId} commitIntelligence={commitIntelligence}/>
+  if(visiblePage==='overview') view=<Overview navigate={navigate} openRepo={openRepository} user={user} repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry} selectedCommitRepository={selectedCommitRepository} onSelectCommitRepository={setCommitRepositoryId} commitIntelligence={commitIntelligence} languageIntelligence={languageIntelligence}/>
   else if(visiblePage==='repositories') view=<Repositories repositories={githubRepositories.repositories} status={githubRepositories.status} error={githubRepositories.error} retry={githubRepositories.retry} openRepo={openRepository}/>
   else if(visiblePage==='code-reviews') view=<Reviews/>
   else if(visiblePage==='analytics') view=<Analytics/>

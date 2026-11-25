@@ -5,6 +5,7 @@ const GitHubOAuthState = require('../models/github-oauth-state.model');
 const GitHubPendingLink = require('../models/github-pending-link.model');
 const { loadGithubConfig } = require('../config/github');
 const createHttpError = require('../utils/http-error');
+const { mapLanguageBreakdown, aggregateLanguageBreakdowns } = require('../utils/language-intelligence');
 const { createGithubAppService } = require('./github-app.service');
 const { requestGithubApi } = require('./github-api.service');
 
@@ -447,6 +448,106 @@ const createGithubService = ({
     });
   };
 
+  const getRepositoryLanguages = async (userId, owner, repositoryName) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const languageBytes = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/languages`,
+        token,
+        fetchImpl,
+      });
+      const breakdown = mapLanguageBreakdown(languageBytes);
+      return {
+        repository: {
+          fullName: `${owner}/${repositoryName}`,
+          totalBytes: breakdown.totalBytes,
+          languages: breakdown.languages,
+        },
+      };
+    });
+  };
+
+  const getLanguageIntelligence = async (userId) => {
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const repositories = [];
+      let page = 1;
+      let hasNext = true;
+
+      while (hasNext) {
+        const result = await requestGithubApi({
+          path: `/installation/repositories?per_page=100&page=${page}`,
+          token,
+          fetchImpl,
+          returnResponse: true,
+        });
+        if (result.status !== 200 || !Array.isArray(result.data?.repositories)) {
+          throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid installation repository list.');
+        }
+
+        for (const repository of result.data.repositories) {
+          const fullName = repository?.full_name;
+          const parts = typeof fullName === 'string' ? fullName.split('/') : [];
+          const [owner, name, extra] = parts;
+          if (
+            !Number.isSafeInteger(repository?.id)
+            || !owner
+            || !name
+            || extra !== undefined
+            || typeof repository.owner?.login !== 'string'
+            || repository.owner.login.toLowerCase() !== owner.toLowerCase()
+          ) {
+            throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid installation repository.');
+          }
+          validateRepositoryCoordinates(owner, name);
+          repositories.push({
+            id: repository.id,
+            name,
+            fullName,
+            owner,
+            url: typeof repository.html_url === 'string' ? repository.html_url : null,
+          });
+        }
+
+        hasNext = /rel="next"/.test(result.headers.get('link') || '');
+        if (hasNext && page >= 10000) {
+          throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an unsupported repository page count.');
+        }
+        page += 1;
+      }
+
+      const uniqueRepositories = [...new Map(repositories.map((repository) => [repository.id, repository])).values()];
+      const languageResponses = new Array(uniqueRepositories.length);
+      let requestError = null;
+      let nextIndex = 0;
+      const worker = async () => {
+        while (!requestError && nextIndex < uniqueRepositories.length) {
+          const index = nextIndex;
+          nextIndex += 1;
+          const repository = uniqueRepositories[index];
+          try {
+            languageResponses[index] = await requestGithubApi({
+              path: `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/languages`,
+              token,
+              fetchImpl,
+            });
+          } catch (error) {
+            requestError = error;
+          }
+        }
+      };
+
+      await Promise.all(Array.from({ length: Math.min(4, uniqueRepositories.length) }, worker));
+      if (requestError) throw requestError;
+
+      return aggregateLanguageBreakdowns(uniqueRepositories.map((repository, index) => ({
+        ...repository,
+        languageBytes: languageResponses[index],
+      })));
+    });
+  };
+
   const getRepository = async (userId, owner, repositoryName) => {
     validateRepositoryCoordinates(owner, repositoryName);
 
@@ -472,6 +573,8 @@ const createGithubService = ({
     listCommits,
     getCommitDetails,
     getCommitActivity,
+    getRepositoryLanguages,
+    getLanguageIntelligence,
     getRepository,
   };
 };

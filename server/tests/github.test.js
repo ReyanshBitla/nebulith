@@ -8,6 +8,7 @@ const { createApp } = require('../src/server');
 const { createGithubService } = require('../src/services/github.service');
 const { createGithubAppService } = require('../src/services/github-app.service');
 const { requestGithubApi } = require('../src/services/github-api.service');
+const { mapLanguageBreakdown, aggregateLanguageBreakdowns } = require('../src/utils/language-intelligence');
 
 const USER_ID = '000000000000000000000001';
 const NEBULITH_JWT_SECRET = 'github-tests-use-this-secret-with-at-least-32-bytes';
@@ -618,6 +619,103 @@ test('commit API rate limits are mapped safely and preserve Retry-After', async 
   assert.deepEqual(fixture.appService.revokedInstallationTokens, [INSTALLATION_TOKEN]);
 });
 
+test('repository language breakdown calculates bytes and percentages and handles empty responses', () => {
+  assert.deepEqual(mapLanguageBreakdown({ JavaScript: 75, CSS: 25 }), {
+    totalBytes: 100,
+    languages: [
+      { name: 'JavaScript', bytes: 75, percentage: 75 },
+      { name: 'CSS', bytes: 25, percentage: 25 },
+    ],
+  });
+  assert.deepEqual(mapLanguageBreakdown({}), { totalBytes: 0, languages: [] });
+  assert.throws(() => mapLanguageBreakdown({ JavaScript: -1 }), { code: 'GITHUB_INVALID_RESPONSE' });
+});
+
+test('language aggregation sums raw bytes before percentages and counts each repository once', () => {
+  const result = aggregateLanguageBreakdowns([
+    { id: 1, name: 'one', fullName: 'owner/one', languageBytes: { JavaScript: 900, Rust: 100 } },
+    { id: 2, name: 'two', fullName: 'owner/two', languageBytes: { JavaScript: 100, Python: 800 } },
+    { id: 1, name: 'one duplicate', fullName: 'owner/one', languageBytes: { JavaScript: 900, Rust: 100 } },
+  ]);
+
+  assert.equal(result.repositories.length, 2);
+  assert.equal(result.aggregate.totalBytes, 1900);
+  assert.deepEqual(result.aggregate.languages, [
+    { name: 'JavaScript', bytes: 1000, repositoryCount: 2, percentage: (1000 / 1900) * 100 },
+    { name: 'Python', bytes: 800, repositoryCount: 1, percentage: (800 / 1900) * 100 },
+    { name: 'Rust', bytes: 100, repositoryCount: 1, percentage: (100 / 1900) * 100 },
+  ]);
+  assert.equal(result.repositories[0].languages[0].percentage, 90);
+  assert.match(result.attribution, /approximation/);
+});
+
+test('language intelligence uses the connected installation, paginates repositories, and returns empty data safely', async () => {
+  const requests = [];
+  const fixture = makeConnectedFixture({
+    fetchImpl: async (url, options) => {
+      const parsed = new URL(url);
+      requests.push({ path: parsed.pathname, search: parsed.searchParams, authorization: options.headers.Authorization });
+      if (parsed.pathname === '/installation/repositories') {
+        const page = parsed.searchParams.get('page');
+        const repositories = page === '1'
+          ? [{ id: 11, name: 'one', full_name: 'nebulith/one', owner: { login: 'nebulith' }, html_url: 'https://github.com/nebulith/one' }]
+          : [
+            { id: 12, name: 'two', full_name: 'nebulith/two', owner: { login: 'nebulith' }, html_url: 'https://github.com/nebulith/two' },
+            { id: 11, name: 'one', full_name: 'nebulith/one', owner: { login: 'nebulith' }, html_url: 'https://github.com/nebulith/one' },
+          ];
+        return new Response(JSON.stringify({ repositories }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            ...(page === '1' ? { link: '<https://api.github.com/installation/repositories?per_page=100&page=2>; rel="next"' } : {}),
+          },
+        });
+      }
+      const languageBytes = parsed.pathname.endsWith('/one/languages') ? { JavaScript: 300, CSS: 100 } : {};
+      return new Response(JSON.stringify(languageBytes), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+
+  const result = await fixture.service.getLanguageIntelligence(USER_ID);
+
+  assert.equal(requests.filter((request) => request.path === '/installation/repositories').length, 2);
+  assert.equal(requests.filter((request) => request.path.endsWith('/languages')).length, 2);
+  assert.ok(requests.every((request) => request.authorization === `Bearer ${INSTALLATION_TOKEN}`));
+  assert.equal(result.repositories.length, 2);
+  assert.equal(result.repositories[1].totalBytes, 0);
+  assert.deepEqual(result.aggregate, {
+    totalBytes: 400,
+    languages: [
+      { name: 'JavaScript', bytes: 300, repositoryCount: 1, percentage: 75 },
+      { name: 'CSS', bytes: 100, repositoryCount: 1, percentage: 25 },
+    ],
+  });
+  assert.deepEqual(fixture.appService.revokedInstallationTokens, [INSTALLATION_TOKEN]);
+  assert.doesNotMatch(JSON.stringify(result), /ghs-test-installation-access-token/);
+});
+
+test('repository languages validate coordinates and map GitHub API failures safely', async () => {
+  let fetchCount = 0;
+  const fixture = makeConnectedFixture({
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return new Response(JSON.stringify({ message: 'private upstream text' }), {
+        status: 403,
+        headers: { 'retry-after': '22' },
+      });
+    },
+  });
+
+  await assert.rejects(fixture.service.getRepositoryLanguages(USER_ID, '../owner', 'repo'), {
+    statusCode: 400, code: 'GITHUB_INVALID_REPOSITORY',
+  });
+  await assert.rejects(fixture.service.getRepositoryLanguages(USER_ID, 'owner', 'repo'), {
+    statusCode: 429, code: 'GITHUB_RATE_LIMITED', retryAfter: 22,
+  });
+  assert.equal(fetchCount, 1);
+  assert.deepEqual(fixture.appService.revokedInstallationTokens, [INSTALLATION_TOKEN]);
+});
+
 test('repositories outside the installation are treated as unavailable', async () => {
   const fixture = makeConnectedFixture({
     fetchImpl: async () => new Response(JSON.stringify({ message: 'private details' }), { status: 404 }),
@@ -878,6 +976,70 @@ test('commit intelligence routes require NEBULITH auth and return paginated comm
     assert.deepEqual(appService.revokedInstallationTokens, [
       INSTALLATION_TOKEN, INSTALLATION_TOKEN, INSTALLATION_TOKEN,
     ]);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('language endpoints require NEBULITH auth and expose aggregate and repository breakdowns', async () => {
+  const integrationModel = createIntegrationModel([{
+    userId: USER_ID,
+    githubAccountId: '1001',
+    installationId: '42',
+    installationAccountId: '84',
+    installationAccountLogin: 'nebulith-org',
+    installationAccountType: 'Organization',
+  }]);
+  const accessToken = jwt.sign({}, NEBULITH_JWT_SECRET, {
+    algorithm: 'HS256', subject: USER_ID, expiresIn: '1h',
+  });
+  const appService = createAppServiceMock();
+  const app = createApp({
+    nodeEnv: 'test', frontendUrl: null, jwtSecret: NEBULITH_JWT_SECRET, jwtExpiresIn: '1h',
+  }, {
+    UserModel: { findById: async (id) => ({ _id: id }) },
+    IntegrationModel: integrationModel,
+    configProvider: () => githubConfig,
+    appService,
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === '/installation/repositories') {
+        return new Response(JSON.stringify({ repositories: [{
+          id: 51, name: 'neb-public', full_name: 'nebulith/neb-public',
+          owner: { login: 'nebulith' }, html_url: 'https://github.com/nebulith/neb-public',
+        }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ TypeScript: 240, CSS: 60 }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const baseUrl = `http://127.0.0.1:${server.address().port}/api/github`;
+
+  try {
+    assert.equal((await fetch(`${baseUrl}/languages`)).status, 401);
+    assert.equal((await fetch(`${baseUrl}/repositories/nebulith/neb-public/languages`)).status, 401);
+
+    const aggregateResponse = await fetch(`${baseUrl}/languages`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const aggregateBody = await aggregateResponse.json();
+    assert.equal(aggregateResponse.status, 200);
+    assert.equal(aggregateBody.data.aggregate.totalBytes, 300);
+    assert.equal(aggregateBody.data.repositories[0].languages[0].percentage, 80);
+
+    const repositoryResponse = await fetch(`${baseUrl}/repositories/nebulith/neb-public/languages`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const repositoryBody = await repositoryResponse.json();
+    assert.equal(repositoryResponse.status, 200);
+    assert.deepEqual(repositoryBody.data.repository.languages, [
+      { name: 'TypeScript', bytes: 240, percentage: 80 },
+      { name: 'CSS', bytes: 60, percentage: 20 },
+    ]);
+    assert.deepEqual(appService.revokedInstallationTokens, [INSTALLATION_TOKEN, INSTALLATION_TOKEN]);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
