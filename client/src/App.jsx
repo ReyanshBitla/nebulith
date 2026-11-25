@@ -3,13 +3,16 @@ import './App.css'
 import './experience.css'
 import './authentication.css'
 import './repositories.css'
+import './activity-intelligence.css'
 import { activity, languages, pullRequests, repositories as sampleRepositories } from './data/demo'
 import { useAuth } from './context/useAuth'
 import { useGithubRepositories } from './context/useGithubRepositories'
 import { useCommitIntelligence } from './context/useCommitIntelligence'
 import { useLanguageIntelligence } from './context/useLanguageIntelligence'
 import { useContributorIntelligence } from './context/useContributorIntelligence'
+import { useActivityComparison } from './context/useActivityComparison'
 import { getSafeAuthError } from './services/auth-errors'
+import { ACTIVITY_PERIODS, alignActivityWindow, compareActivityPeriods, getLatestActivityWindow } from './utils/activity-intelligence'
 
 const paths = {
   spark: <><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14Z"/></>,
@@ -255,7 +258,7 @@ function AppShell({ page, navigate, children, user, onLogout, storageWarning, re
   return <div className="workspace-shell">
     <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}><div className="sidebar-brand"><Brand compact onClick={() => go('landing')}/><button className="mobile-close" aria-label="Close menu" onClick={() => setMobileOpen(false)}><Icon name="close"/></button></div><div className="workspace-switch"><span className="workspace-glyph">N</span><span><b>Northstar Studio</b><small>Free workspace</small></span><span className="switch-chevron">⌄</span></div><div className="side-label">WORKSPACE</div><nav className="side-nav" aria-label="Workspace navigation">{pageNames.map((name,i)=><button key={name} onClick={() => go(name.toLowerCase().replace(' ', '-'))} className={`side-link ${page === name.toLowerCase().replace(' ', '-') ? 'active' : ''}`}><Icon name={pageIcons[i]}/><span>{name}</span>{name==='Code Reviews'&&<i className="nav-count">3</i>}</button>)}</nav><div className="sidebar-spacer"/><div className="side-label">CONNECTED</div><div className="connection-card"><span className="connection-github"><Icon name="github" size={17}/></span><span><b>GitHub</b><small className={`github-link-status ${repositoryStatus === 'success' ? 'is-connected' : ''}`}><i/>{githubStatus}</small></span><span className="connection-dots">···</span></div><button className="sidebar-help" onClick={() => navigate('landing')}><span className="help-mark">?</span><span><b>Need a hand?</b><small>Visit the help center</small></span><Icon name="chevron" size={14}/></button><button className="profile-row" onClick={() => go('settings')}><span className="profile-avatar">{initials}</span><span><b>{displayName}</b><small>{user?.email}</small></span><Icon name="more" size={18}/></button><button className="logout-button" onClick={onLogout}>Sign out</button></aside>
     {mobileOpen && <button className="mobile-scrim" aria-label="Close navigation" onClick={() => setMobileOpen(false)}/>}
-    <div className="workspace-main"><header className="workspace-topbar"><button className="mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Icon name="menu"/></button><div className="breadcrumbs"><span>Northstar Studio</span><Icon name="chevron" size={13}/><b>{pageNames.find((n) => n.toLowerCase().replace(' ', '-') === page) || 'Overview'}</b></div><div className="topbar-actions"><span className="demo-badge" title="Repository listings are live; review, activity and productivity insights are sample data."><i/> LIVE + SAMPLE</span><button className="icon-button" aria-label="Notifications"><Icon name="bell"/></button><button className="topbar-avatar" onClick={() => go('settings')}>{initials}</button></div></header>{storageWarning&&<div className="storage-warning" role="status">{storageWarning}</div>}<main className="workspace-content">{children}</main><footer className="workspace-footer"><span>NEBULITH <i>·</i> A clearer view of your codebase</span><span>Repository data live · Insights sample</span></footer></div>
+    <div className="workspace-main"><header className="workspace-topbar"><button className="mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Icon name="menu"/></button><div className="breadcrumbs"><span>Northstar Studio</span><Icon name="chevron" size={13}/><b>{pageNames.find((n) => n.toLowerCase().replace(' ', '-') === page) || 'Overview'}</b></div><div className="topbar-actions"><span className="demo-badge" title="Repository, commit activity, contributor and language data are live; code review and productivity previews are sample data."><i/> LIVE + SAMPLE</span><button className="icon-button" aria-label="Notifications"><Icon name="bell"/></button><button className="topbar-avatar" onClick={() => go('settings')}>{initials}</button></div></header>{storageWarning&&<div className="storage-warning" role="status">{storageWarning}</div>}<main className="workspace-content">{children}</main><footer className="workspace-footer"><span>NEBULITH <i>·</i> A clearer view of your codebase</span><span>Repository data live · Insights sample</span></footer></div>
   </div>
 }
 
@@ -273,6 +276,10 @@ function Overview({ navigate, openRepo, user, repositories: liveRepositories, re
     forks: total.forks + (Number.isFinite(repo.forks) ? repo.forks : 0),
   }), { total: 0, public: 0, private: 0, stars: 0, forks: 0 }), [liveRepositories])
   const connected = repositoryStatus === 'success'
+  const [activityBuckets, setActivityBuckets] = useState(13)
+  const [comparisonIds, setComparisonIds] = useState([])
+  const comparisonRepositories = useMemo(() => liveRepositories.filter((repository) => comparisonIds.includes(String(repository.id)) && String(repository.id) !== String(selectedCommitRepository?.id)).slice(0, 3), [liveRepositories, comparisonIds, selectedCommitRepository?.id])
+  const activityComparison = useActivityComparison(connected && Boolean(selectedCommitRepository), comparisonRepositories)
   const isLoading = repositoryStatus === 'loading'
   const disconnected = repositoryError?.code === 'GITHUB_NOT_CONNECTED'
   const connectionTitle = connected
@@ -283,7 +290,7 @@ function Overview({ navigate, openRepo, user, repositories: liveRepositories, re
         ? 'GitHub is not connected'
         : 'GitHub repository access is unavailable'
   const connectionMessage = connected
-    ? 'Repository statistics below are live. Other workspace analytics remain sample data.'
+    ? 'Repository, commit activity, contributor and language data are live. Code review and productivity previews remain sample data.'
     : isLoading
       ? 'Fetching repository data from your linked GitHub App installation.'
       : disconnected
@@ -295,14 +302,96 @@ function Overview({ navigate, openRepo, user, repositories: liveRepositories, re
     <PageHeader className="overview-page-header" eyebrow="YOUR WORKSPACE" title={`Good morning, ${firstName}`} detail="A live view of your repositories, alongside clearly marked workspace previews." action={<Button kind="secondary" onClick={() => navigate('repositories')}><Icon name="github" size={16}/> View repositories</Button>}/>
     <div className={`connection-banner ${connected ? 'repository-connected' : !isLoading ? 'repository-disconnected' : ''}`}><div className="connected-mark"><Icon name="github" size={18}/></div><div><b>{connectionTitle}</b><span>{connectionMessage}</span></div><span className="connected-status"><i/>{connected ? ' Live' : isLoading ? ' Loading' : ' Check'}</span>{!connected&&!isLoading&&<button className="banner-arrow" onClick={retryRepositories} aria-label="Retry GitHub repository connection"><Icon name="arrow" size={16}/></button>}</div>
     <div className="stat-grid repository-stat-grid"><StatCard label="Repositories" value={statValue(stats.total)} delta={statNote} icon="repo" tone="cyan"/><StatCard label="Public" value={statValue(stats.public)} delta="Live GitHub data" icon="globe" tone="green"/><StatCard label="Private" value={statValue(stats.private)} delta="Live GitHub data" icon="lock" tone="violet"/><StatCard label="Stars" value={statValue(stats.stars)} delta="Live GitHub data" icon="spark" tone="amber"/><StatCard label="Forks" value={statValue(stats.forks)} delta="Live GitHub data" icon="repo" tone="cyan"/></div>
-    <div className="dashboard-grid overview-pulse-grid"><section className="panel activity-panel"><div className="panel-heading"><div><h2>Engineering pulse</h2><p>Contribution activity · sample data</p></div><select aria-label="Activity time range" defaultValue="7 days"><option>7 days</option><option>30 days</option><option>90 days</option></select></div><ActivityChart compact/></section></div>
+    <ActivityIntelligencePanel repositories={liveRepositories} repositoryStatus={repositoryStatus} retryRepositories={retryRepositories} selectedRepository={selectedCommitRepository} onSelectRepository={onSelectCommitRepository} intelligence={commitIntelligence} period={activityBuckets} onPeriodChange={setActivityBuckets} comparisonRepositories={comparisonRepositories} comparison={activityComparison} comparisonIds={comparisonIds} onComparisonIdsChange={setComparisonIds}/>
     <LanguageIntelligencePanel intelligence={languageIntelligence}/>
     <div className="dashboard-grid overview-lower-grid"><section className="panel repositories-panel"><div className="panel-heading"><div><h2>Your repositories</h2><p>{repositoryStatus === 'success' ? 'Live GitHub App data · select a repository for details.' : 'Live GitHub App repositories'}</p></div><button className="panel-link" onClick={() => navigate('repositories')}>All repositories <Icon name="arrow" size={14}/></button></div>{repositoryStatus === 'success' && liveRepositories.length > 0 ? <div className="overview-repo-grid">{liveRepositories.slice(0,4).map((repo)=><OverviewRepoCard key={repo.id} repo={repo} openRepo={openRepo}/>)}</div> : <RepositoryFeedback status={repositoryStatus} error={repositoryError} retry={retryRepositories} empty={repositoryStatus === 'success'}/>}</section><RecentRepositoryActivity intelligence={commitIntelligence} repositoryName={selectedCommitRepository?.fullName}/></div>
     <CommitIntelligencePanel repositories={liveRepositories} repositoryStatus={repositoryStatus} repositoryError={repositoryError} retryRepositories={retryRepositories} selectedRepository={selectedCommitRepository} onSelectRepository={onSelectCommitRepository} intelligence={commitIntelligence}/>
     <ContributorIntelligencePanel repositories={liveRepositories} repositoryStatus={repositoryStatus} selectedRepository={selectedCommitRepository} onSelectRepository={onSelectCommitRepository} intelligence={contributorIntelligence} commitIntelligence={commitIntelligence}/>
     <div className="dashboard-grid overview-insights-grid"><section className="panel code-summary-panel"><div className="panel-heading"><div><h2>Code review overview</h2><p>Sample pull request signals</p></div><button className="panel-link" onClick={() => navigate('code-reviews')}>Review queue <Icon name="arrow" size={14}/></button></div><div className="review-summary-meter"><div className="review-summary-ring"><strong>08</strong><span>OPEN</span></div><div className="review-summary-copy"><b>Moving at a healthy pace</b><span>3 ready · 3 in review · 2 need attention</span><div className="review-summary-bar"><i/></div></div></div><div className="review-summary-list"><span><i className="review-dot violet"/> In review <b>03</b></span><span><i className="review-dot green"/> Ready to merge <b>03</b></span><span><i className="review-dot amber"/> Needs attention <b>02</b></span></div></section><section className="panel productivity-panel"><div className="productivity-heading"><span className="productivity-icon"><Icon name="bolt" size={18}/></span><span className="section-index">TEAM MOMENTUM · SAMPLE</span></div><p>A little less waiting.<br/><strong>A little more making.</strong></p><div className="productivity-metrics"><div><span>AVG. REVIEW TIME</span><b>4.2h</b></div><div><span>WEEKLY MOMENTUM</span><b>+18%</b></div></div><div className="productivity-sparkline" aria-hidden="true"><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div></section></div>
-    <div className="demo-disclaimer"><Icon name="spark" size={14}/> Repository metadata, commit history, contributor accounts, weekly contributor activity and language analytics above use live GitHub data. Engineering pulse, code review and productivity previews remain sample data.</div>
+    <div className="demo-disclaimer"><Icon name="spark" size={14}/> Repository metadata, commit history, weekly activity, contributor accounts and language analytics above use live GitHub data. Code review and productivity previews remain sample data.</div>
   </>
+}
+
+function activityDate(timestamp, options = { month: 'short', day: 'numeric', year: 'numeric' }) {
+  return new Date(timestamp * 1000).toLocaleDateString(undefined, { ...options, timeZone: 'UTC' })
+}
+
+function activityWindowLabel(window) {
+  if (window?.status !== 'ready') return ''
+  return `${activityDate(window.startWeek)} – ${activityDate(window.endWeek)}`
+}
+
+function includesCurrentActivityWeek(window) {
+  if (window?.status !== 'ready') return false
+  const sunday = new Date()
+  sunday.setUTCHours(0, 0, 0, 0)
+  sunday.setUTCDate(sunday.getUTCDate() - sunday.getUTCDay())
+  const currentWeekStart = Math.floor(sunday.getTime() / 1000)
+  return window.weeks.some((week) => week.week === currentWeekStart)
+}
+
+function ActivityIntelligencePanel({ repositories, repositoryStatus, retryRepositories, selectedRepository, onSelectRepository, intelligence, period, onPeriodChange, comparisonRepositories, comparison, comparisonIds, onComparisonIdsChange }) {
+  const window = getLatestActivityWindow(intelligence.weeks, period)
+  const periodComparison = compareActivityPeriods(intelligence.weeks, period)
+  const selectedId = String(selectedRepository?.id ?? '')
+  const statusMessage = {
+    loading: 'Loading weekly GitHub activity…',
+    computing: 'GitHub is preparing these statistics. Retry in a moment.',
+    unavailable: 'GitHub has no activity statistics available for this repository yet.',
+    error: intelligence.activityError?.message || 'Weekly activity could not be loaded.',
+  }
+  const comparisonMax = Math.max(window.status === 'ready' ? window.total : 0, ...comparisonRepositories.map((repo) => {
+    const result = comparison.results[String(repo.id ?? repo.fullName)]
+    return window.status === 'ready' && result?.status === 'ready'
+      ? alignActivityWindow(result.weeks, window.weeks).total || 0
+      : 0
+  }), 1)
+
+  return <section className="panel activity-intelligence-panel">
+    <div className="panel-heading"><div><span className="section-index">LIVE GITHUB STATISTICS</span><h2>Engineering pulse</h2><p>Weekly commits from GitHub · each point is one Sunday–Saturday bucket.</p></div><div className="activity-controls">
+      {repositories.length > 0 && <label><span>Repository</span><select value={selectedId} onChange={(event) => onSelectRepository(repositories.find((repo) => String(repo.id) === event.target.value)?.id)} aria-label="Repository for Engineering pulse">{repositories.map((repo) => <option key={repo.id} value={String(repo.id)}>{repo.fullName}</option>)}</select></label>}
+      <label><span>Period</span><select value={period} onChange={(event) => onPeriodChange(Number(event.target.value))} aria-label="Engineering pulse period">{ACTIVITY_PERIODS.map((item) => <option value={item.buckets} key={item.buckets}>{item.label}</option>)}</select></label>
+    </div></div>
+    {!selectedRepository ? <div className="activity-message">{repositoryStatus === 'loading' ? 'Loading connected repositories…' : repositoryStatus === 'success' ? 'Connect or select a repository to view commit activity.' : 'GitHub repository access is unavailable.'}{repositoryStatus !== 'success' && repositoryStatus !== 'loading' && <button className="quiet-button" onClick={retryRepositories}>Retry</button>}</div>
+      : intelligence.activityStatus === 'ready' && window.status === 'ready' ? <>
+        <div className="activity-period-summary"><div><small>{selectedRepository.fullName} · {activityWindowLabel(window)}</small><strong>{window.total.toLocaleString()} <span>commits</span></strong>{includesCurrentActivityWeek(window) && <small>The latest GitHub week is in progress, so its count may be partial.</small>}</div><div className="activity-period-compare" aria-live="polite">
+          {periodComparison.status === 'ready' ? <><span>Previous equivalent period · {activityWindowLabel(periodComparison.previous)}</span><b>{periodComparison.current.total.toLocaleString()} vs {periodComparison.previous.total.toLocaleString()} commits</b><small>{periodComparison.difference > 0 ? '+' : ''}{periodComparison.difference.toLocaleString()} commits{periodComparison.percentageChange === null ? ' · percentage unavailable (previous period was zero)' : ` · ${periodComparison.percentageChange > 0 ? '+' : ''}${periodComparison.percentageChange.toFixed(1)}%`}</small></> : <span>{periodComparison.status === 'insufficient' ? 'Previous equivalent period is outside GitHub’s available history.' : 'A continuous previous period is not available; comparison omitted.'}</span>}
+        </div></div>
+        <WeeklyActivityChart weeks={window.weeks} label={`${selectedRepository.fullName} weekly commits, ${activityWindowLabel(window)}`}/>
+      </> : intelligence.activityStatus === 'ready' && window.status === 'insufficient' ? <div className="activity-message">GitHub returned {intelligence.weeks.length} weekly buckets; {period} continuous buckets are needed for this view.</div>
+        : intelligence.activityStatus === 'ready' ? <div className="activity-message">The returned GitHub weeks have gaps, so this period cannot be shown as a continuous chart.</div>
+          : <div className="activity-message" role={intelligence.activityStatus === 'error' ? 'alert' : 'status'}>{statusMessage[intelligence.activityStatus] || 'Activity data is not available.'}{['error', 'computing'].includes(intelligence.activityStatus) && <button className="quiet-button" onClick={intelligence.retryActivity}>{intelligence.activityStatus === 'error' ? 'Retry' : 'Check again'}</button>}</div>}
+    <div className="activity-comparison">
+      <div className="panel-heading"><div><h3>Repository comparison</h3><p>Same {period} weekly buckets and exact GitHub week timestamps as the selected repository.</p></div></div>
+      {repositories.filter((repo) => String(repo.id) !== selectedId).length > 0 ? <div className="activity-repo-options">{repositories.filter((repo) => String(repo.id) !== selectedId).map((repo) => <label key={repo.id}><input type="checkbox" checked={comparisonIds.includes(String(repo.id))} disabled={!comparisonIds.includes(String(repo.id)) && comparisonIds.length >= 3} onChange={(event) => onComparisonIdsChange((current) => event.target.checked ? [...current, String(repo.id)] : current.filter((id) => id !== String(repo.id)))}/><span>{repo.fullName}</span></label>)}</div> : <p className="activity-message">Connect more repositories to compare activity.</p>}
+      {comparisonRepositories.map((repo) => {
+        const key = String(repo.id ?? repo.fullName)
+        const result = comparison.results[key] || { status: 'loading', weeks: [] }
+        const aligned = window.status === 'ready' && result.status === 'ready' ? alignActivityWindow(result.weeks, window.weeks) : null
+        const stateText = result.status === 'loading' ? 'Loading…' : result.status === 'computing' ? 'GitHub is computing statistics' : result.status === 'unavailable' ? 'Statistics unavailable' : result.status === 'error' ? (result.error?.message || 'Could not load activity') : window.status !== 'ready' ? 'Waiting for a complete primary period' : aligned?.status === 'ready' ? `${aligned.total.toLocaleString()} commits` : `Incomplete coverage (${aligned?.availableBuckets || 0}/${period} buckets)`
+        return <div className="activity-comparison-row" key={key}><b>{repo.fullName}</b><span>{stateText}</span>{result.status === 'error' || result.status === 'computing' ? <button className="quiet-button" onClick={() => comparison.retry(key)}>{result.status === 'error' ? 'Retry' : 'Check again'}</button> : aligned?.status === 'ready' && <i title={`${aligned.total} commits in same weekly buckets`}><span style={{ width: `${Math.max(2, Math.min(100, (aligned.total / comparisonMax) * 100))}%` }}/></i>}</div>
+      })}
+    </div>
+  </section>
+}
+
+function WeeklyActivityChart({ weeks, label }) {
+  const max = Math.max(...weeks.map((week) => week.total), 1)
+  const width = 720
+  const height = 180
+  const step = width / weeks.length
+  return <div className="live-weekly-chart"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
+    <line x1="0" y1="160" x2={width} y2="160" className="activity-axis"/>
+    {weeks.map((week, index) => {
+      const barWidth = Math.max(3, step * 0.52)
+      const barHeight = week.total === 0 ? 2 : Math.max(3, (week.total / max) * 140)
+      const x = index * step + (step - barWidth) / 2
+      const y = 160 - barHeight
+      return <g key={week.week} tabIndex="0" role="img" aria-label={`${activityDate(week.week, { month: 'long', day: 'numeric', year: 'numeric' })}: ${week.total} commits`}>
+        <rect x={x} y={y} width={barWidth} height={barHeight} rx="2" className="live-activity-bar"/><title>{`${activityDate(week.week, { month: 'long', day: 'numeric', year: 'numeric' })} week · ${week.total} commits`}</title>
+      </g>
+    })}
+  </svg><div className="live-chart-dates"><span>{activityDate(weeks[0].week)}</span><span>{activityDate(weeks[weeks.length - 1].week)}</span></div></div>
 }
 
 function OverviewRepoCard({ repo, openRepo }) {
