@@ -15,6 +15,10 @@ const STATE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const REPOSITORY_PART_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const COMMIT_SHA_PATTERN = /^[A-Fa-f\d]{7,64}$/;
 const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const PULL_REQUEST_STATES = new Set(['open', 'closed', 'all']);
+const MAX_PULL_REQUEST_BODY_CHARACTERS = 20000;
+const MAX_PULL_REQUEST_PATCH_CHARACTERS = 12000;
+const MAX_PULL_REQUEST_PAGE_PATCH_CHARACTERS = 240000;
 
 const getId = (value) => (value && typeof value.toString === 'function' ? value.toString() : String(value));
 
@@ -39,6 +43,86 @@ const validateCommitSha = (sha) => {
   if (typeof sha !== 'string' || !COMMIT_SHA_PATTERN.test(sha)) {
     throw createHttpError(400, 'GITHUB_INVALID_COMMIT', 'A valid commit SHA is required.');
   }
+};
+
+const validatePullRequestNumber = (number) => {
+  if (!Number.isSafeInteger(number) || number < 1 || number > 2_147_483_647) {
+    throw createHttpError(400, 'GITHUB_INVALID_PULL_REQUEST', 'A valid pull request number is required.');
+  }
+};
+
+const safeGithubHtmlUrl = (value) => {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname === 'github.com' && !url.username && !url.password
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const mapPullRequest = (pullRequest, { includeBody = false } = {}) => {
+  if (
+    !pullRequest
+    || !Number.isSafeInteger(pullRequest.number)
+    || pullRequest.number < 1
+    || typeof pullRequest.title !== 'string'
+    || !['open', 'closed'].includes(pullRequest.state)
+  ) {
+    throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid pull request response.');
+  }
+  const merged = Boolean(pullRequest.merged_at || pullRequest.merged);
+  const body = typeof pullRequest.body === 'string' ? pullRequest.body : '';
+  const safeIntegerOrNull = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return {
+    number: pullRequest.number,
+    title: pullRequest.title.slice(0, 500),
+    ...(includeBody ? {
+      body: body.slice(0, MAX_PULL_REQUEST_BODY_CHARACTERS),
+      bodyTruncated: body.length > MAX_PULL_REQUEST_BODY_CHARACTERS,
+    } : {}),
+    author: typeof pullRequest.user?.login === 'string' ? pullRequest.user.login.slice(0, 100) : null,
+    state: pullRequest.state,
+    merged,
+    draft: Boolean(pullRequest.draft),
+    createdAt: typeof pullRequest.created_at === 'string' ? pullRequest.created_at : null,
+    updatedAt: typeof pullRequest.updated_at === 'string' ? pullRequest.updated_at : null,
+    closedAt: typeof pullRequest.closed_at === 'string' ? pullRequest.closed_at : null,
+    url: safeGithubHtmlUrl(pullRequest.html_url),
+    baseBranch: typeof pullRequest.base?.ref === 'string' ? pullRequest.base.ref.slice(0, 255) : null,
+    headBranch: typeof pullRequest.head?.ref === 'string' ? pullRequest.head.ref.slice(0, 255) : null,
+    additions: safeIntegerOrNull(pullRequest.additions),
+    deletions: safeIntegerOrNull(pullRequest.deletions),
+    changedFiles: safeIntegerOrNull(pullRequest.changed_files),
+  };
+};
+
+const mapPullRequestFile = (file, remainingPatchCharacters) => {
+  if (!file || typeof file.filename !== 'string' || file.filename.length > 2000) {
+    throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid changed-file response.');
+  }
+  const numeric = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const rawPatch = typeof file.patch === 'string' ? file.patch : null;
+  const patchLimit = Math.max(0, Math.min(MAX_PULL_REQUEST_PATCH_CHARACTERS, remainingPatchCharacters));
+  const patch = rawPatch === null ? null : rawPatch.slice(0, patchLimit);
+  const patchTruncated = rawPatch !== null && patch.length < rawPatch.length;
+  return {
+    filename: file.filename,
+    previousFilename: typeof file.previous_filename === 'string' ? file.previous_filename : null,
+    status: ['added', 'removed', 'modified', 'renamed', 'copied', 'changed', 'unchanged'].includes(file.status)
+      ? file.status
+      : 'unknown',
+    additions: numeric(file.additions),
+    deletions: numeric(file.deletions),
+    changes: numeric(file.changes),
+    patch,
+    patchAvailable: rawPatch !== null,
+    patchTruncated,
+    patchOmittedByLimit: rawPatch !== null && patchLimit === 0,
+    url: safeGithubHtmlUrl(file.blob_url),
+  };
 };
 
 const mapCommit = (commit) => {
@@ -362,6 +446,22 @@ const createGithubService = ({
     }
   };
 
+  const assertInstallationRepository = async (token, owner, repositoryName) => {
+    const repository = await requestGithubApi({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}`,
+      token,
+      fetchImpl,
+    });
+    if (
+      !Number.isSafeInteger(repository?.id)
+      || typeof repository.full_name !== 'string'
+      || repository.full_name.toLowerCase() !== `${owner}/${repositoryName}`.toLowerCase()
+    ) {
+      throw createHttpError(404, 'GITHUB_RESOURCE_NOT_FOUND', 'The repository is unavailable to this GitHub App installation.');
+    }
+    return repository;
+  };
+
   const listRepositories = async (userId, { page = 1, perPage = 30 } = {}) => {
     const integration = await getInstallationForUser(userId);
     return withInstallationToken(integration.installationId, async (token) => {
@@ -379,6 +479,74 @@ const createGithubService = ({
           perPage,
           total: Number.isSafeInteger(result.total_count) ? result.total_count : repositories.length,
         },
+      };
+    });
+  };
+
+  const listPullRequests = async (userId, owner, repositoryName, { state = 'open', page = 1, perPage = 20 } = {}) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    if (!PULL_REQUEST_STATES.has(state)) {
+      throw createHttpError(400, 'GITHUB_INVALID_PULL_REQUEST_STATE', 'Pull request state must be open, closed or all.');
+    }
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      await assertInstallationRepository(token, owner, repositoryName);
+      const result = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/pulls?state=${state}&per_page=${perPage}&page=${page}`,
+        token,
+        fetchImpl,
+        returnResponse: true,
+      });
+      if (result.status !== 200 || !Array.isArray(result.data)) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid pull request list.');
+      }
+      return {
+        pullRequests: result.data.map((pullRequest) => mapPullRequest(pullRequest)),
+        pagination: { page, perPage, hasNext: /rel="next"/.test(result.headers.get('link') || '') },
+      };
+    });
+  };
+
+  const getPullRequest = async (userId, owner, repositoryName, pullNumber) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    validatePullRequestNumber(pullNumber);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      await assertInstallationRepository(token, owner, repositoryName);
+      const pullRequest = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/pulls/${pullNumber}`,
+        token,
+        fetchImpl,
+      });
+      return mapPullRequest(pullRequest, { includeBody: true });
+    });
+  };
+
+  const listPullRequestFiles = async (userId, owner, repositoryName, pullNumber, { page = 1, perPage = 20 } = {}) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    validatePullRequestNumber(pullNumber);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      await assertInstallationRepository(token, owner, repositoryName);
+      const result = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/pulls/${pullNumber}/files?per_page=${perPage}&page=${page}`,
+        token,
+        fetchImpl,
+        returnResponse: true,
+        maxResponseBytes: 1_500_000,
+      });
+      if (result.status !== 200 || !Array.isArray(result.data)) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid changed-file list.');
+      }
+      let remainingPatchCharacters = MAX_PULL_REQUEST_PAGE_PATCH_CHARACTERS;
+      const files = result.data.map((file) => {
+        const mapped = mapPullRequestFile(file, remainingPatchCharacters);
+        if (mapped.patch !== null) remainingPatchCharacters -= mapped.patch.length;
+        return mapped;
+      });
+      return {
+        files,
+        pagination: { page, perPage, hasNext: /rel="next"/.test(result.headers.get('link') || '') },
       };
     });
   };
@@ -633,6 +801,9 @@ const createGithubService = ({
     selectInstallation,
     disconnect,
     listRepositories,
+    listPullRequests,
+    getPullRequest,
+    listPullRequestFiles,
     listCommits,
     getCommitDetails,
     getCommitActivity,

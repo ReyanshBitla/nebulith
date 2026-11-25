@@ -11,6 +11,45 @@ const parseJson = async (response) => {
   }
 };
 
+const parseJsonWithLimit = async (response, maxResponseBytes) => {
+  const contentLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+    try { await response.body?.cancel(); } catch { /* Best effort response cancellation. */ }
+    throw createHttpError(502, 'GITHUB_RESPONSE_TOO_LARGE', 'GitHub returned a response larger than NEBULITH can safely process.');
+  }
+
+  if (!response.body?.getReader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxResponseBytes) {
+      throw createHttpError(502, 'GITHUB_RESPONSE_TOO_LARGE', 'GitHub returned a response larger than NEBULITH can safely process.');
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid response.');
+    }
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxResponseBytes) {
+      try { await reader.cancel(); } catch { /* Best effort response cancellation. */ }
+      throw createHttpError(502, 'GITHUB_RESPONSE_TOO_LARGE', 'GitHub returned a response larger than NEBULITH can safely process.');
+    }
+    chunks.push(Buffer.from(value));
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks, totalBytes).toString('utf8'));
+  } catch {
+    throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid response.');
+  }
+};
+
 const getRetryAfterSeconds = (response) => {
   const rawRetryAfter = response.headers.get('retry-after');
   const retryAfter = rawRetryAfter === null ? NaN : Number(rawRetryAfter);
@@ -53,7 +92,7 @@ const mapGithubError = (response) => {
   return createHttpError(502, 'GITHUB_REQUEST_FAILED', 'The GitHub request could not be completed.');
 };
 
-const requestGithubApi = async ({ path, token, method = 'GET', body, fetchImpl = globalThis.fetch, returnResponse = false }) => {
+const requestGithubApi = async ({ path, token, method = 'GET', body, fetchImpl = globalThis.fetch, returnResponse = false, maxResponseBytes }) => {
   if (typeof fetchImpl !== 'function') {
     throw createHttpError(503, 'FETCH_UNAVAILABLE', 'GitHub integration requires a Node.js runtime with fetch support.');
   }
@@ -88,10 +127,15 @@ const requestGithubApi = async ({ path, token, method = 'GET', body, fetchImpl =
     if (response.status === 204 || response.status === 202) {
       return { status: response.status, data: null, headers: response.headers };
     }
-    return { status: response.status, data: await parseJson(response), headers: response.headers };
+    const data = Number.isSafeInteger(maxResponseBytes) && maxResponseBytes > 0
+      ? await parseJsonWithLimit(response, maxResponseBytes)
+      : await parseJson(response);
+    return { status: response.status, data, headers: response.headers };
   }
 
-  return parseJson(response);
+  return Number.isSafeInteger(maxResponseBytes) && maxResponseBytes > 0
+    ? parseJsonWithLimit(response, maxResponseBytes)
+    : parseJson(response);
 };
 
 module.exports = { requestGithubApi, mapGithubError, API_BASE_URL, API_VERSION };

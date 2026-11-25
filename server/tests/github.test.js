@@ -1304,3 +1304,193 @@ test('installation tokens request only existing read permissions needed by repos
   assert.deepEqual(requestBody, { permissions: { contents: 'read', metadata: 'read', pull_requests: 'read' } });
   assert.equal(claims.iss, githubConfig.appId);
 });
+
+test('pull request endpoints require authentication, validate filters and pagination, and return safe paginated data', async () => {
+  const integrationModel = createIntegrationModel([{
+    userId: USER_ID,
+    githubAccountId: '1001',
+    installationId: '42',
+    installationAccountId: '84',
+    installationAccountLogin: 'nebulith-org',
+    installationAccountType: 'Organization',
+  }]);
+  const accessToken = jwt.sign({}, NEBULITH_JWT_SECRET, {
+    algorithm: 'HS256', subject: USER_ID, expiresIn: '1h',
+  });
+  const appService = createAppServiceMock();
+  const requests = [];
+  const app = createApp({
+    nodeEnv: 'test', frontendUrl: null, jwtSecret: NEBULITH_JWT_SECRET, jwtExpiresIn: '1h',
+  }, {
+    UserModel: { findById: async (id) => ({ _id: id }) },
+    IntegrationModel: integrationModel,
+    configProvider: () => githubConfig,
+    appService,
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      requests.push(parsed);
+      if (parsed.pathname === '/repos/nebulith/neb-public') {
+        return new Response(JSON.stringify({ id: 7, full_name: 'nebulith/neb-public' }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (parsed.pathname.endsWith('/pulls/7/files')) {
+        return new Response(JSON.stringify([
+          { filename: 'src/new.js', status: 'added', additions: 2, deletions: 0, changes: 2, patch: '@@ -0,0 +1,2 @@\n+one\n+two', blob_url: 'https://github.com/nebulith/neb-public/blob/head/src/new.js' },
+          { filename: 'assets/icon.bin', status: 'modified', additions: 0, deletions: 0, changes: 0 },
+          { filename: 'src/current.js', previous_filename: 'src/old.js', status: 'renamed', additions: 1, deletions: 1, changes: 2, patch: 'x'.repeat(13000) },
+        ]), {
+          status: 200,
+          headers: { 'content-type': 'application/json', link: '<https://api.github.com/repos/nebulith/neb-public/pulls/7/files?page=2>; rel="next"' },
+        });
+      }
+      if (parsed.pathname.endsWith('/pulls/7')) {
+        return new Response(JSON.stringify({
+          number: 7, title: 'Improve session handling', body: 'Plain text PR description', state: 'closed', merged_at: '2026-04-03T10:00:00Z',
+          user: { login: 'review-author' }, html_url: 'https://github.com/nebulith/neb-public/pull/7',
+          created_at: '2026-04-01T10:00:00Z', updated_at: '2026-04-03T10:00:00Z', closed_at: '2026-04-03T10:00:00Z',
+          base: { ref: 'main' }, head: { ref: 'feature/session' }, additions: 3, deletions: 1, changed_files: 3,
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (parsed.pathname.endsWith('/pulls')) {
+        return new Response(JSON.stringify([{
+          number: 7, title: 'Improve session handling', state: 'closed', merged_at: '2026-04-03T10:00:00Z',
+          user: { login: 'review-author' }, html_url: 'https://github.com/nebulith/neb-public/pull/7', updated_at: '2026-04-03T10:00:00Z',
+          base: { ref: 'main' }, head: { ref: 'feature/session' },
+        }]), {
+          status: 200,
+          headers: { 'content-type': 'application/json', link: '<https://api.github.com/repos/nebulith/neb-public/pulls?page=3>; rel="next"' },
+        });
+      }
+      return new Response(JSON.stringify({ message: 'unexpected request' }), { status: 500, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const baseUrl = `http://127.0.0.1:${server.address().port}/api/github/repositories/nebulith/neb-public`;
+
+  try {
+    for (const path of ['/pulls', '/pulls/7', '/pulls/7/files']) {
+      assert.equal((await fetch(`${baseUrl}${path}`)).status, 401);
+    }
+
+    const headers = { authorization: `Bearer ${accessToken}` };
+    const invalidState = await fetch(`${baseUrl}/pulls?state=merged`, { headers });
+    assert.equal(invalidState.status, 400);
+    const invalidFilePageSize = await fetch(`${baseUrl}/pulls/7/files?per_page=51`, { headers });
+    assert.equal(invalidFilePageSize.status, 400);
+    const invalidPullNumber = await fetch(`${baseUrl}/pulls/0`, { headers });
+    assert.equal(invalidPullNumber.status, 400);
+
+    const listResponse = await fetch(`${baseUrl}/pulls?state=closed&page=2&per_page=5`, { headers });
+    const listBody = await listResponse.json();
+    assert.equal(listResponse.status, 200);
+    assert.deepEqual(listBody.data.pagination, { page: 2, perPage: 5, hasNext: true });
+    assert.equal(listBody.data.pullRequests[0].merged, true);
+    assert.equal(listBody.data.pullRequests[0].author, 'review-author');
+    assert.equal(requests.find((url) => url.pathname.endsWith('/pulls')).searchParams.get('state'), 'closed');
+    assert.equal(requests.find((url) => url.pathname.endsWith('/pulls')).searchParams.get('page'), '2');
+
+    const detailResponse = await fetch(`${baseUrl}/pulls/7`, { headers });
+    const detailBody = await detailResponse.json();
+    assert.equal(detailResponse.status, 200);
+    assert.equal(detailBody.data.pullRequest.body, 'Plain text PR description');
+    assert.equal(detailBody.data.pullRequest.merged, true);
+    assert.equal(detailBody.data.pullRequest.headBranch, 'feature/session');
+    assert.equal('headSha' in detailBody.data.pullRequest, false);
+
+    const filesResponse = await fetch(`${baseUrl}/pulls/7/files?page=1&per_page=3`, { headers });
+    const filesBody = await filesResponse.json();
+    assert.equal(filesResponse.status, 200);
+    assert.deepEqual(filesBody.data.pagination, { page: 1, perPage: 3, hasNext: true });
+    assert.equal(filesBody.data.files[0].patchAvailable, true);
+    assert.equal(filesBody.data.files[1].patchAvailable, false);
+    assert.equal(filesBody.data.files[2].previousFilename, 'src/old.js');
+    assert.equal(filesBody.data.files[2].patch.length, 12000);
+    assert.equal(filesBody.data.files[2].patchTruncated, true);
+    assert.doesNotMatch(JSON.stringify({ listBody, detailBody, filesBody }), /ghs-test-installation-access-token|mock-private-key|client-secret/);
+    assert.equal(appService.revokedInstallationTokens.length, 3);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('pull request routes do not access a repository unavailable to the connected installation', async () => {
+  const integrationModel = createIntegrationModel([{
+    userId: USER_ID, githubAccountId: '1001', installationId: '42', installationAccountId: '84',
+    installationAccountLogin: 'nebulith-org', installationAccountType: 'Organization',
+  }]);
+  const accessToken = jwt.sign({}, NEBULITH_JWT_SECRET, { algorithm: 'HS256', subject: USER_ID, expiresIn: '1h' });
+  let pullRequestCalls = 0;
+  const app = createApp({ nodeEnv: 'test', frontendUrl: null, jwtSecret: NEBULITH_JWT_SECRET, jwtExpiresIn: '1h' }, {
+    UserModel: { findById: async (id) => ({ _id: id }) },
+    IntegrationModel: integrationModel,
+    configProvider: () => githubConfig,
+    appService: createAppServiceMock(),
+    fetchImpl: async (url) => {
+      if (new URL(url).pathname === '/repos/other-org/private-repo') {
+        return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+      }
+      pullRequestCalls += 1;
+      return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/github/repositories/other-org/private-repo/pulls`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    assert.equal(response.status, 404);
+    assert.equal(pullRequestCalls, 0);
+    assert.doesNotMatch(await response.text(), /installation-access-token|Not Found/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('pull request GitHub rate limits return a safe retry response', async () => {
+  const integrationModel = createIntegrationModel([{
+    userId: USER_ID, githubAccountId: '1001', installationId: '42', installationAccountId: '84',
+    installationAccountLogin: 'nebulith-org', installationAccountType: 'Organization',
+  }]);
+  const accessToken = jwt.sign({}, NEBULITH_JWT_SECRET, { algorithm: 'HS256', subject: USER_ID, expiresIn: '1h' });
+  const app = createApp({ nodeEnv: 'test', frontendUrl: null, jwtSecret: NEBULITH_JWT_SECRET, jwtExpiresIn: '1h' }, {
+    UserModel: { findById: async (id) => ({ _id: id }) },
+    IntegrationModel: integrationModel,
+    configProvider: () => githubConfig,
+    appService: createAppServiceMock(),
+    fetchImpl: async (url) => new URL(url).pathname === '/repos/nebulith/neb-public'
+      ? new Response(JSON.stringify({ id: 7, full_name: 'nebulith/neb-public' }), { status: 200, headers: { 'content-type': 'application/json' } })
+      : new Response(JSON.stringify({ message: 'private upstream details' }), {
+        status: 403, headers: { 'content-type': 'application/json', 'x-ratelimit-remaining': '0', 'retry-after': '17' },
+      }),
+  });
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/github/repositories/nebulith/neb-public/pulls`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    const body = await response.json();
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get('retry-after'), '17');
+    assert.equal(body.error.code, 'GITHUB_RATE_LIMITED');
+    assert.doesNotMatch(JSON.stringify(body), /private upstream details|installation-access-token/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test('GitHub API response limits stop oversized file payloads before parsing the full body', async () => {
+  const responseBody = JSON.stringify({ patch: 'x'.repeat(4096) });
+  await assert.rejects(
+    requestGithubApi({
+      path: '/repos/acme/project/pulls/1/files',
+      token: INSTALLATION_TOKEN,
+      maxResponseBytes: 128,
+      fetchImpl: async () => new Response(responseBody, { status: 200, headers: { 'content-type': 'application/json' } }),
+    }),
+    (error) => error.code === 'GITHUB_RESPONSE_TOO_LARGE' && error.statusCode === 502,
+  );
+});

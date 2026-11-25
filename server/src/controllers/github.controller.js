@@ -2,7 +2,7 @@ const createHttpError = require('../utils/http-error');
 
 const getUserId = (req) => req.user._id;
 
-const parsePagination = (query, defaultPerPage = 30) => {
+const parsePagination = (query, defaultPerPage = 30, maxPerPage = 100) => {
   const readValue = (value, fallback, max, name) => {
     if (value === undefined) {
       return fallback;
@@ -20,8 +20,27 @@ const parsePagination = (query, defaultPerPage = 30) => {
 
   return {
     page: readValue(query.page, 1, 10000, 'page'),
-    perPage: readValue(query.per_page, defaultPerPage, 100, 'per_page'),
+    perPage: readValue(query.per_page, defaultPerPage, maxPerPage, 'per_page'),
   };
+};
+
+const parsePullRequestState = (query) => {
+  const state = query.state === undefined ? 'open' : query.state;
+  if (typeof state !== 'string' || !['open', 'closed', 'all'].includes(state)) {
+    throw createHttpError(400, 'GITHUB_INVALID_PULL_REQUEST_STATE', 'Pull request state must be open, closed or all.');
+  }
+  return state;
+};
+
+const parsePullRequestNumber = (value) => {
+  if (typeof value !== 'string' || !/^[1-9]\d{0,9}$/.test(value)) {
+    throw createHttpError(400, 'GITHUB_INVALID_PULL_REQUEST', 'A valid pull request number is required.');
+  }
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number > 2_147_483_647) {
+    throw createHttpError(400, 'GITHUB_INVALID_PULL_REQUEST', 'A valid pull request number is required.');
+  }
+  return number;
 };
 
 const createGithubController = (githubService) => ({
@@ -70,6 +89,34 @@ const createGithubController = (githubService) => ({
     ),
   }),
 
+  listPullRequests: async (req, res) => res.status(200).json({
+    success: true,
+    data: await githubService.listPullRequests(
+      getUserId(req),
+      req.params.owner,
+      req.params.repo,
+      { ...parsePagination(req.query, 20, 100), state: parsePullRequestState(req.query) },
+    ),
+  }),
+
+  pullRequestDetails: async (req, res) => res.status(200).json({
+    success: true,
+    data: { pullRequest: await githubService.getPullRequest(
+      getUserId(req), req.params.owner, req.params.repo, parsePullRequestNumber(req.params.number),
+    ) },
+  }),
+
+  pullRequestFiles: async (req, res) => res.status(200).json({
+    success: true,
+    data: await githubService.listPullRequestFiles(
+      getUserId(req),
+      req.params.owner,
+      req.params.repo,
+      parsePullRequestNumber(req.params.number),
+      parsePagination(req.query, 20, 50),
+    ),
+  }),
+
   commitDetails: async (req, res) => res.status(200).json({
     success: true,
     data: {
@@ -112,4 +159,4 @@ const createGithubController = (githubService) => ({
   }),
 });
 
-module.exports = { createGithubController, parsePagination };
+module.exports = { createGithubController, parsePagination, parsePullRequestNumber, parsePullRequestState };

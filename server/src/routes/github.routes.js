@@ -17,6 +17,9 @@ const createGithubRouter = (dependencies = {}) => {
   router.post('/installations/:installationId/select', authenticate, controller.selectInstallation);
   router.get('/repositories', authenticate, controller.listRepositories);
   router.get('/languages', authenticate, controller.languageIntelligence);
+  router.get('/repositories/:owner/:repo/pulls', authenticate, controller.listPullRequests);
+  router.get('/repositories/:owner/:repo/pulls/:number/files', authenticate, controller.pullRequestFiles);
+  router.get('/repositories/:owner/:repo/pulls/:number', authenticate, controller.pullRequestDetails);
   router.get('/repositories/:owner/:repo/commits', authenticate, controller.listCommits);
   router.get('/repositories/:owner/:repo/commits/:sha', authenticate, controller.commitDetails);
   router.get('/repositories/:owner/:repo/commit-activity', authenticate, controller.commitActivity);

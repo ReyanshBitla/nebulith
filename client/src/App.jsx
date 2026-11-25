@@ -4,12 +4,15 @@ import './experience.css'
 import './authentication.css'
 import './repositories.css'
 import './activity-intelligence.css'
-import { activity, languages, pullRequests, repositories as sampleRepositories } from './data/demo'
+import './pull-requests.css'
+import { activity, languages, repositories as sampleRepositories } from './data/demo'
 import { useAuth } from './context/useAuth'
 import { useGithubRepositories } from './context/useGithubRepositories'
 import { useCommitIntelligence } from './context/useCommitIntelligence'
 import { useLanguageIntelligence } from './context/useLanguageIntelligence'
 import { useContributorIntelligence } from './context/useContributorIntelligence'
+import { usePullRequestDetails, usePullRequestList } from './context/usePullRequestIntelligence'
+import { filterPullRequests, formatPullRequestDate, getPullRequestStatus } from './utils/pull-request-intelligence'
 import { useActivityComparison } from './context/useActivityComparison'
 import { getSafeAuthError } from './services/auth-errors'
 import { ACTIVITY_PERIODS, alignActivityWindow, compareActivityPeriods, getLatestActivityWindow } from './utils/activity-intelligence'
@@ -727,11 +730,95 @@ function Repositories({ repositories: allRepositories, status, error, retry, ope
   return <><PageHeader eyebrow="CONNECTED GITHUB APP" title="Repositories" detail="Repositories available to your linked GitHub App installation."/><div className="repo-toolbar"><label className="search-field"><Icon name="search" size={17}/><input value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="Search repositories…" aria-label="Search repositories"/><kbd>⌘ K</kbd></label><div className="filter-tabs" role="group" aria-label="Filter repositories">{visibilityOptions.map((item)=><button key={item} className={filter===item?'selected':''} onClick={()=>setFilter(item)}>{item === 'all' ? 'All repositories' : `${item[0].toUpperCase()}${item.slice(1)}`}<small>{item === 'all' ? allRepositories.length : counts[item] || 0}</small></button>)}</div></div><section className="panel repositories-page-panel"><div className="repo-results-head"><span>{status === 'success' ? `${filtered.length} of ${allRepositories.length} repositories` : 'Live GitHub repositories'}</span><span>Sorted by last updated <span className="sort-chevron">⌄</span></span></div>{status !== 'success' ? <RepositoryFeedback status={status} error={error} retry={retry}/> : filtered.length ? <RepoTable repos={filtered} openRepo={openRepo}/> : <div className="empty-state"><Icon name={search || filter !== 'all' ? 'search' : 'repo'} size={24}/><b>{search || filter !== 'all' ? 'No repositories match' : 'No repositories are available'}</b><span>{search || filter !== 'all' ? 'Try another search or visibility filter.' : 'The connected GitHub App currently has no accessible repositories.'}</span></div>}</section><div className="live-data-note"><Icon name="github" size={14}/> Repository information is provided by the GitHub App installation linked to your NEBULITH account.</div></>
 }
 
-function Reviews() {
-  const [selected, setSelected] = useState(pullRequests[1])
-  const [filter, setFilter] = useState('All reviews')
-  const visible = pullRequests.filter((pr)=>filter==='All reviews'||pr.status===filter)
-  return <><PageHeader eyebrow="A BETTER SECOND LOOK" title="Code reviews" detail="A preview of how thoughtful, contextual reviews could feel." action={<span className="prototype-label"><Icon name="spark" size={13}/> PROTOTYPE</span>}/><div className="review-summary"><StatCard label="Open pull requests" value="08" delta="Across 4 repositories" icon="review" tone="violet"/><StatCard label="Ready to merge" value="03" delta="No blocking findings" icon="check" tone="green"/><StatCard label="Needs attention" value="02" delta="1 high severity finding" icon="bolt" tone="amber"/></div><div className="review-layout"><section className="panel pr-list"><div className="panel-heading"><div><h2>Pull requests</h2><p>Sample review queue</p></div><button className="quiet-icon" aria-label="More pull request options"><Icon name="more"/></button></div><div className="review-filter">{['All reviews','In review','Needs attention','Approved'].map((item)=><button key={item} className={filter===item?'selected':''} onClick={()=>setFilter(item)}>{item}</button>)}</div>{visible.map((pr)=><button className={`pr-card ${selected.id===pr.id?'selected':''}`} key={pr.id} onClick={()=>setSelected(pr)}><div className="pr-card-meta"><span>{pr.id}</span><span className={`severity ${pr.severity.toLowerCase().replace(' ','-')}`}>{pr.severity}</span></div><b>{pr.title}</b><small>{pr.repo} <i>·</i> by {pr.author}</small><div className="pr-card-bottom"><span className={`review-state ${pr.status.toLowerCase().replace(' ','-')}`}><i/>{pr.status}</span><time>{pr.time}</time></div></button>)}</section><section className="panel review-detail"><div className="review-detail-head"><div><span className="eyebrow">{selected.repo} {selected.id}</span><h2>{selected.title}</h2><p>Opened by {selected.author} <span>·</span> {selected.time}</p></div><button className="quiet-icon" aria-label="More review details"><Icon name="more"/></button></div><div className="review-ai-note"><span className="ai-spark"><Icon name="spark" size={17}/></span><div><b>Review preview</b><span>Illustrative insights only. No AI review has been run.</span></div></div><div className="code-review-block"><div className="code-file"><Icon name="code" size={15}/> src/auth/session.ts <span>+8 −2</span></div><pre><code><span className="code-muted">  41</span>  <span className="code-purple">export async function</span> refreshSession() {'{'}<br/><span className="code-muted">  42</span>    <span className="code-purple">const</span> session = <span className="code-blue">await</span> store.get();<br/><span className="code-muted">  43</span>    <span className="code-red">- if (session.expired) return null;</span><br/><span className="code-muted">  44</span>    <span className="code-green">+ if (!session || session.expired) return null;</span><br/><span className="code-muted">  45</span>    <span className="code-blue">return</span> refresh(session);<br/><span className="code-muted">  46</span>  {'}'}</code></pre></div><div className="finding-card"><span className="finding-icon"><Icon name="spark" size={16}/></span><div><div className="finding-title"><b>Guard against a missing session</b><span className="severity high">HIGH</span></div><p>Accessing <code>session.expired</code> may throw when no session is found. Consider checking for a missing value before reading its properties.</p><button onClick={()=>window.alert('This is an illustrative code review finding.')}>View suggestion <Icon name="arrow" size={13}/></button></div></div><div className="review-panel-foot"><span><i/> Example finding · illustrative only</span><button onClick={()=>window.alert('Review actions are not connected in this prototype.')}>Open pull request <Icon name="external" size={14}/></button></div></section></div></>
+function getPullRequestErrorMessage(error) {
+  if (error?.code === 'GITHUB_RATE_LIMITED') return Number.isSafeInteger(error.retryAfter)
+    ? `GitHub rate limit reached. Retry in about ${error.retryAfter} seconds.`
+    : 'GitHub rate limit reached. Wait briefly, then retry.'
+  if (error?.code === 'GITHUB_NOT_CONNECTED') return 'Connect your GitHub App account to browse pull requests.'
+  if (error?.status === 0) return 'NEBULITH could not reach the server. Check your connection and retry.'
+  return error?.message || 'Pull request data could not be loaded. Try again.'
+}
+
+function Reviews({ repositories, repositoryStatus, repositoryError, retryRepositories }) {
+  const [repositoryId, setRepositoryId] = useState('')
+  const [stateFilter, setStateFilter] = useState('open')
+  const [search, setSearch] = useState('')
+  const [selectedNumber, setSelectedNumber] = useState(null)
+  const selectedRepository = repositories.find((repository) => String(repository.id) === repositoryId) || repositories[0] || null
+  const list = usePullRequestList(repositoryStatus === 'success' && Boolean(selectedRepository), selectedRepository, stateFilter)
+  const visiblePullRequests = filterPullRequests(list.pullRequests, stateFilter, search)
+  const selectedPull = visiblePullRequests.find((pullRequest) => pullRequest.number === selectedNumber) || visiblePullRequests[0] || null
+  const details = usePullRequestDetails(Boolean(selectedRepository) && Boolean(selectedPull), selectedRepository, selectedPull?.number ?? null)
+
+  const states = [
+    ['open', 'Open'],
+    ['closed', 'Closed'],
+    ['merged', 'Merged'],
+    ['all', 'All'],
+  ]
+  const repositoryMessage = repositoryStatus === 'loading'
+    ? 'Loading connected repositories…'
+    : repositoryStatus === 'error'
+      ? getPullRequestErrorMessage(repositoryError)
+      : 'No repositories are available to this GitHub App installation.'
+
+  return <>
+    <PageHeader eyebrow="CONNECTED GITHUB APP" title="Pull requests" detail="Browse pull requests and inspect their changes. This page is read-only; no AI review or GitHub action is run." action={selectedRepository?.fullName && <span className="prototype-label"><Icon name="github" size={13}/> LIVE GITHUB DATA</span>}/>
+    <section className="panel pr-workspace">
+      <div className="pr-workspace-toolbar">
+        <label className="pr-repository-select"><span>Repository</span><select value={selectedRepository ? String(selectedRepository.id) : ''} onChange={(event) => { setRepositoryId(event.target.value); setSelectedNumber(null) }} disabled={!repositories.length} aria-label="Repository for pull requests"><option value="">{repositories.length ? 'Choose repository' : 'No repositories'}</option>{repositories.map((repository) => <option key={repository.id} value={String(repository.id)}>{repository.fullName}</option>)}</select></label>
+        {selectedRepository && <label className="pr-search"><Icon name="search" size={15}/><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, author or #number" aria-label="Search pull requests"/></label>}
+        <div className="review-filter pr-state-filter" role="group" aria-label="Filter pull requests">{states.map(([value, label]) => <button type="button" key={value} className={stateFilter === value ? 'selected' : ''} aria-pressed={stateFilter === value} onClick={() => { setStateFilter(value); setSelectedNumber(null) }}>{label}</button>)}</div>
+      </div>
+      {repositoryStatus !== 'success' || !selectedRepository ? <div className="pr-feedback" role={repositoryStatus === 'error' ? 'alert' : 'status'}><Icon name="repo" size={22}/><b>{repositoryStatus === 'success' ? 'No connected repositories' : repositoryStatus === 'loading' ? 'Loading repositories' : 'Repositories unavailable'}</b><span>{repositoryMessage}</span>{repositoryStatus !== 'loading' && <Button kind="secondary" onClick={retryRepositories}>Retry repositories</Button>}</div> : <div className="pr-browser">
+        <section className="panel pr-list"><div className="panel-heading"><div><h2>Pull requests</h2><p>{selectedRepository.fullName} · {stateFilter === 'all' ? 'all states' : stateFilter}</p></div><button className="quiet-button" type="button" onClick={list.retry}>Refresh</button></div>
+          {list.status === 'loading' && <div className="pr-feedback" role="status"><span className="pr-spinner"/>Loading pull requests…</div>}
+          {list.status === 'error' && <div className="pr-feedback" role="alert"><b>Pull requests could not be loaded</b><span>{getPullRequestErrorMessage(list.error)}</span><Button kind="secondary" onClick={list.retry}>Retry</Button></div>}
+          {list.status === 'success' && visiblePullRequests.length === 0 && <div className="pr-feedback"><b>{search ? 'No matching pull requests' : 'No pull requests in this view'}</b><span>{search ? 'Try a different search.' : stateFilter === 'merged' || stateFilter === 'closed' ? 'Load another page to search older pull requests.' : 'GitHub returned no pull requests for this repository and filter.'}</span></div>}
+          {list.status === 'success' && visiblePullRequests.map((pullRequest) => <button type="button" className={`pr-card ${selectedPull?.number === pullRequest.number ? 'selected' : ''}`} key={pullRequest.number} onClick={() => setSelectedNumber(pullRequest.number)} aria-pressed={selectedPull?.number === pullRequest.number}>
+            <div className="pr-card-meta"><span>#{pullRequest.number}</span><span className={`pr-status-pill ${pullRequest.merged ? 'merged' : pullRequest.state}`}>{getPullRequestStatus(pullRequest)}</span></div><b>{pullRequest.title}</b><small>{pullRequest.author ? `by ${pullRequest.author}` : 'Author unavailable'}</small><div className="pr-card-bottom"><span>{pullRequest.changedFiles === null ? 'Changed files unavailable' : `${pullRequest.changedFiles} changed files`}</span><time>{formatPullRequestDate(pullRequest.updatedAt)}</time></div>
+          </button>)}
+          {list.status === 'success' && list.hasNext && <div className="pr-load-more"><Button kind="secondary" disabled={list.loadingMore} onClick={list.loadMore}>{list.loadingMore ? 'Loading…' : 'Load more pull requests'}</Button>{list.loadMoreError && <span role="alert">{getPullRequestErrorMessage(list.loadMoreError)} <button onClick={list.loadMore}>Retry</button></span>}</div>}
+        </section>
+        <section className="panel review-detail pr-detail-panel">
+          {!selectedPull ? <div className="pr-feedback"><Icon name="review" size={22}/><b>Select a pull request</b><span>Its GitHub metadata and changed files will appear here.</span></div> : <PullRequestDetail selectedPull={selectedPull} details={details}/>}
+        </section>
+      </div>}
+    </section>
+    <div className="live-data-note"><Icon name="github" size={14}/> Pull request data comes from the GitHub App installation linked to your NEBULITH account. Descriptions, filenames and diffs are displayed as plain text.</div>
+  </>
+}
+
+function PullRequestDetail({ selectedPull, details }) {
+  const pullRequest = details.pullRequest || selectedPull
+  return <>
+    <div className="review-detail-head"><div><span className="eyebrow">{selectedPull.number ? `#${selectedPull.number}` : ''} · {getPullRequestStatus(pullRequest)}</span><h2>{pullRequest.title}</h2><p>{pullRequest.author ? `Opened by ${pullRequest.author}` : 'Author unavailable'} · Updated {formatPullRequestDate(pullRequest.updatedAt)}</p></div>{pullRequest.url && <a className="quiet-button github-pr-link" href={pullRequest.url} target="_blank" rel="noopener noreferrer">Open on GitHub <Icon name="external" size={13}/></a>}</div>
+    {details.detailStatus === 'loading' && <div className="pr-detail-loading" role="status"><i/><i/><i/></div>}
+    {details.detailStatus === 'error' && <div className="pr-inline-error" role="alert"><span>{getPullRequestErrorMessage(details.detailError)}</span><Button kind="secondary" onClick={details.retry}>Retry details</Button></div>}
+    {details.detailStatus === 'success' && <>
+      <div className="pr-metadata"><span>{pullRequest.baseBranch || 'base unavailable'} ← {pullRequest.headBranch || 'head unavailable'}</span>{pullRequest.additions !== null && <span className="diff-add-count">+{pullRequest.additions}</span>}{pullRequest.deletions !== null && <span className="diff-remove-count">−{pullRequest.deletions}</span>}{pullRequest.changedFiles !== null && <span>{pullRequest.changedFiles} files changed</span>}</div>
+      <div className="pr-description"><h3>Description</h3>{pullRequest.body ? <p>{pullRequest.body}</p> : <span>No description provided.</span>}{pullRequest.bodyTruncated && <small>Description preview was shortened for display.</small>}</div>
+    </>}
+    <div className="pr-files-heading"><div><h3>Changed files</h3><span>{details.filesStatus === 'success' ? `${details.files.length} shown${details.hasNext ? ' · more available' : ''}` : 'Read-only GitHub diff preview'}</span></div></div>
+    {details.filesStatus === 'loading' && <div className="pr-feedback" role="status"><span className="pr-spinner"/>Loading changed files…</div>}
+    {details.filesStatus === 'error' && <div className="pr-inline-error" role="alert"><span>{getPullRequestErrorMessage(details.filesError)}</span><Button kind="secondary" onClick={details.retry}>Retry files</Button></div>}
+    {details.filesStatus === 'success' && details.files.length === 0 && <div className="pr-feedback"><b>No changed files</b><span>GitHub returned no changed files for this pull request.</span></div>}
+    {details.filesStatus === 'success' && details.files.map((file) => <PullRequestFile key={`${file.previousFilename || ''}:${file.filename}`} file={file}/>)}
+    {details.filesStatus === 'success' && details.hasNext && <div className="pr-load-more"><Button kind="secondary" disabled={details.loadingMore} onClick={details.loadMoreFiles}>{details.loadingMore ? 'Loading files…' : 'Load more files'}</Button>{details.loadMoreError && <span role="alert">{getPullRequestErrorMessage(details.loadMoreError)} <button onClick={details.loadMoreFiles}>Retry</button></span>}</div>}
+  </>
+}
+
+function PullRequestFile({ file }) {
+  const diffLines = typeof file.patch === 'string' ? file.patch.split('\n') : []
+  return <details className="pr-file"><summary><span className="pr-file-chevron"><Icon name="chevron" size={13}/></span><span className="pr-file-title"><b>{file.filename}</b>{file.previousFilename && file.previousFilename !== file.filename && <small>renamed from {file.previousFilename}</small>}<small>{file.status}{!file.patchAvailable ? ' · patch not provided by GitHub' : file.patchTruncated ? (file.patchOmittedByLimit ? ' · patch omitted by response size limit' : ' · patch preview truncated') : ''}</small></span><span className="diff-add-count">+{file.additions ?? '—'}</span><span className="diff-remove-count">−{file.deletions ?? '—'}</span></summary>
+    {file.url && <div className="pr-file-actions"><a href={file.url} target="_blank" rel="noopener noreferrer">Open file on GitHub <Icon name="external" size={12}/></a></div>}
+    {file.patchAvailable && file.patch ? <pre className="pr-diff" aria-label={`Diff for ${file.filename}`}>{diffLines.map((line, index) => {
+      const className = line.startsWith('+') && !line.startsWith('+++') ? 'diff-line-added'
+        : line.startsWith('-') && !line.startsWith('---') ? 'diff-line-removed'
+          : line.startsWith('@@') ? 'diff-line-hunk' : ''
+      return <span className={className} key={`${index}:${line}`}>{line || ' '}{'\n'}</span>
+    })}</pre> : file.patchOmittedByLimit ? <div className="pr-missing-patch">The text patch was omitted because this page reached NEBULITH’s response-size limit.</div> : <div className="pr-missing-patch">GitHub did not provide a text patch for this file. It may be binary, too large or otherwise unavailable.</div>}
+  </details>
 }
 
 function Analytics() {
@@ -832,7 +919,7 @@ function App() {
   let view
   if(visiblePage==='overview') view=<Overview navigate={navigate} openRepo={openRepository} user={user} repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry} selectedCommitRepository={selectedCommitRepository} onSelectCommitRepository={setCommitRepositoryId} commitIntelligence={commitIntelligence} languageIntelligence={languageIntelligence} contributorIntelligence={contributorIntelligence}/>
   else if(visiblePage==='repositories') view=<Repositories repositories={githubRepositories.repositories} status={githubRepositories.status} error={githubRepositories.error} retry={githubRepositories.retry} openRepo={openRepository}/>
-  else if(visiblePage==='code-reviews') view=<Reviews/>
+  else if(visiblePage==='code-reviews') view=<Reviews repositories={githubRepositories.repositories} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error} retryRepositories={githubRepositories.retry}/>
   else if(visiblePage==='analytics') view=<Analytics/>
   else view=<Settings user={user} repositoryStatus={githubRepositories.status}/>
   return <><AppShell page={visiblePage} navigate={navigate} user={user} onLogout={handleLogout} storageWarning={storageWarning} repositoryStatus={githubRepositories.status} repositoryError={githubRepositories.error}>{view}</AppShell><RepositoryModal repo={selectedRepo} close={()=>setSelectedRepo(null)} commitIntelligence={commitIntelligence}/></>
