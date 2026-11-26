@@ -19,6 +19,10 @@ test('valid environment configuration is accepted', () => {
     frontendUrl: validEnvironment.FRONTEND_URL,
     jwtSecret: validEnvironment.JWT_SECRET,
     jwtExpiresIn: '1h',
+    reviewWorkerPollIntervalMs: 1000,
+    reviewWorkerConcurrency: 2,
+    reviewWorkerLeaseMs: 60000,
+    reviewMaxAttempts: 3,
   });
 });
 
@@ -105,4 +109,10 @@ test('JWT_EXPIRES_IN defaults to 1h and invalid durations are rejected', () => {
       /Invalid JWT_EXPIRES_IN/,
     );
   }
+});
+
+test('review worker environment settings are bounded and validated', () => {
+  assert.throws(() => loadEnvConfig({ ...validEnvironment, REVIEW_WORKER_CONCURRENCY: '99' }), /Invalid REVIEW_WORKER_CONCURRENCY/);
+  assert.throws(() => loadEnvConfig({ ...validEnvironment, REVIEW_WORKER_POLL_INTERVAL_MS: '0' }), /Invalid REVIEW_WORKER_POLL_INTERVAL_MS/);
+  assert.throws(() => loadEnvConfig({ ...validEnvironment, REVIEW_MAX_ATTEMPTS: '8' }), /Invalid REVIEW_MAX_ATTEMPTS/);
 });

@@ -12,10 +12,12 @@ import { useCommitIntelligence } from './context/useCommitIntelligence'
 import { useLanguageIntelligence } from './context/useLanguageIntelligence'
 import { useContributorIntelligence } from './context/useContributorIntelligence'
 import { usePullRequestDetails, usePullRequestList } from './context/usePullRequestIntelligence'
+import { useCodeReviews } from './context/useCodeReviews'
 import { filterPullRequests, formatPullRequestDate, getPullRequestStatus } from './utils/pull-request-intelligence'
 import { useActivityComparison } from './context/useActivityComparison'
 import { getSafeAuthError } from './services/auth-errors'
 import { ACTIVITY_PERIODS, alignActivityWindow, compareActivityPeriods, getLatestActivityWindow } from './utils/activity-intelligence'
+import { readPageFromSearch, resolveNavigationTarget, resolveVisiblePage, searchWithPage, WORKSPACE_PAGES, readCodeReviewSelection, saveCodeReviewSelection } from './utils/workspace-navigation'
 
 const paths = {
   spark: <><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 14 .9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14Z"/></>,
@@ -53,6 +55,10 @@ function Brand({ onClick, compact = false }) {
 
 function Button({ children, kind = 'primary', onClick, className = '', type = 'button', disabled = false }) {
   return <button type={type} className={`button button-${kind} ${className}`} onClick={onClick} disabled={disabled}>{children}</button>
+}
+
+function getWorkspaceSessionStorage() {
+  try { return window.sessionStorage } catch { return null }
 }
 
 function ShootingStars() {
@@ -740,15 +746,25 @@ function getPullRequestErrorMessage(error) {
 }
 
 function Reviews({ repositories, repositoryStatus, repositoryError, retryRepositories }) {
-  const [repositoryId, setRepositoryId] = useState('')
-  const [stateFilter, setStateFilter] = useState('open')
+  const [savedSelection] = useState(() => readCodeReviewSelection(getWorkspaceSessionStorage()))
+  const [repositoryId, setRepositoryId] = useState(savedSelection.repositoryId)
+  const [stateFilter, setStateFilter] = useState(savedSelection.stateFilter)
   const [search, setSearch] = useState('')
-  const [selectedNumber, setSelectedNumber] = useState(null)
-  const selectedRepository = repositories.find((repository) => String(repository.id) === repositoryId) || repositories[0] || null
+  const [selectedNumber, setSelectedNumber] = useState(savedSelection.pullNumber)
+  const requestedRepository = repositories.find((repository) => String(repository.id) === repositoryId)
+  const selectedRepository = requestedRepository || repositories[0] || null
+  const restoredRepositoryMissing = repositoryStatus === 'success' && Boolean(repositoryId) && !requestedRepository
+  const selectedNumberForRepository = restoredRepositoryMissing ? null : selectedNumber
   const list = usePullRequestList(repositoryStatus === 'success' && Boolean(selectedRepository), selectedRepository, stateFilter)
   const visiblePullRequests = filterPullRequests(list.pullRequests, stateFilter, search)
-  const selectedPull = visiblePullRequests.find((pullRequest) => pullRequest.number === selectedNumber) || visiblePullRequests[0] || null
+  const selectedPull = visiblePullRequests.find((pullRequest) => pullRequest.number === selectedNumberForRepository)
+    || (selectedNumberForRepository ? { number: selectedNumberForRepository, title: `Pull request #${selectedNumberForRepository}`, state: stateFilter === 'open' ? 'open' : 'closed' } : visiblePullRequests[0])
   const details = usePullRequestDetails(Boolean(selectedRepository) && Boolean(selectedPull), selectedRepository, selectedPull?.number ?? null)
+
+  useEffect(() => {
+    if (!selectedRepository) return
+    saveCodeReviewSelection(getWorkspaceSessionStorage(), { repositoryId: String(selectedRepository.id), pullNumber: selectedNumberForRepository, stateFilter })
+  }, [selectedRepository, selectedNumberForRepository, stateFilter])
 
   const states = [
     ['open', 'Open'],
@@ -766,22 +782,22 @@ function Reviews({ repositories, repositoryStatus, repositoryError, retryReposit
     <PageHeader eyebrow="CONNECTED GITHUB APP" title="Pull requests" detail="Browse pull requests and inspect their changes. This page is read-only; no AI review or GitHub action is run." action={selectedRepository?.fullName && <span className="prototype-label"><Icon name="github" size={13}/> LIVE GITHUB DATA</span>}/>
     <section className="panel pr-workspace">
       <div className="pr-workspace-toolbar">
-        <label className="pr-repository-select"><span>Repository</span><select value={selectedRepository ? String(selectedRepository.id) : ''} onChange={(event) => { setRepositoryId(event.target.value); setSelectedNumber(null) }} disabled={!repositories.length} aria-label="Repository for pull requests"><option value="">{repositories.length ? 'Choose repository' : 'No repositories'}</option>{repositories.map((repository) => <option key={repository.id} value={String(repository.id)}>{repository.fullName}</option>)}</select></label>
+        <label className="pr-repository-select"><span>Repository</span><select value={selectedRepository ? String(selectedRepository.id) : ''} onChange={(event) => { setRepositoryId(event.target.value); setSelectedNumber(null); saveCodeReviewSelection(getWorkspaceSessionStorage(), { repositoryId: event.target.value, pullNumber: null, stateFilter }) }} disabled={!repositories.length} aria-label="Repository for pull requests"><option value="">{repositories.length ? 'Choose repository' : 'No repositories'}</option>{repositories.map((repository) => <option key={repository.id} value={String(repository.id)}>{repository.fullName}</option>)}</select></label>
         {selectedRepository && <label className="pr-search"><Icon name="search" size={15}/><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search title, author or #number" aria-label="Search pull requests"/></label>}
-        <div className="review-filter pr-state-filter" role="group" aria-label="Filter pull requests">{states.map(([value, label]) => <button type="button" key={value} className={stateFilter === value ? 'selected' : ''} aria-pressed={stateFilter === value} onClick={() => { setStateFilter(value); setSelectedNumber(null) }}>{label}</button>)}</div>
+        <div className="review-filter pr-state-filter" role="group" aria-label="Filter pull requests">{states.map(([value, label]) => <button type="button" key={value} className={stateFilter === value ? 'selected' : ''} aria-pressed={stateFilter === value} onClick={() => { setStateFilter(value); setSelectedNumber(null); saveCodeReviewSelection(getWorkspaceSessionStorage(), { repositoryId: selectedRepository?.id ? String(selectedRepository.id) : '', pullNumber: null, stateFilter: value }) }}>{label}</button>)}</div>
       </div>
       {repositoryStatus !== 'success' || !selectedRepository ? <div className="pr-feedback" role={repositoryStatus === 'error' ? 'alert' : 'status'}><Icon name="repo" size={22}/><b>{repositoryStatus === 'success' ? 'No connected repositories' : repositoryStatus === 'loading' ? 'Loading repositories' : 'Repositories unavailable'}</b><span>{repositoryMessage}</span>{repositoryStatus !== 'loading' && <Button kind="secondary" onClick={retryRepositories}>Retry repositories</Button>}</div> : <div className="pr-browser">
         <section className="panel pr-list"><div className="panel-heading"><div><h2>Pull requests</h2><p>{selectedRepository.fullName} · {stateFilter === 'all' ? 'all states' : stateFilter}</p></div><button className="quiet-button" type="button" onClick={list.retry}>Refresh</button></div>
           {list.status === 'loading' && <div className="pr-feedback" role="status"><span className="pr-spinner"/>Loading pull requests…</div>}
           {list.status === 'error' && <div className="pr-feedback" role="alert"><b>Pull requests could not be loaded</b><span>{getPullRequestErrorMessage(list.error)}</span><Button kind="secondary" onClick={list.retry}>Retry</Button></div>}
           {list.status === 'success' && visiblePullRequests.length === 0 && <div className="pr-feedback"><b>{search ? 'No matching pull requests' : 'No pull requests in this view'}</b><span>{search ? 'Try a different search.' : stateFilter === 'merged' || stateFilter === 'closed' ? 'Load another page to search older pull requests.' : 'GitHub returned no pull requests for this repository and filter.'}</span></div>}
-          {list.status === 'success' && visiblePullRequests.map((pullRequest) => <button type="button" className={`pr-card ${selectedPull?.number === pullRequest.number ? 'selected' : ''}`} key={pullRequest.number} onClick={() => setSelectedNumber(pullRequest.number)} aria-pressed={selectedPull?.number === pullRequest.number}>
+          {list.status === 'success' && visiblePullRequests.map((pullRequest) => <button type="button" className={`pr-card ${selectedPull?.number === pullRequest.number ? 'selected' : ''}`} key={pullRequest.number} onClick={() => { setSelectedNumber(pullRequest.number); saveCodeReviewSelection(getWorkspaceSessionStorage(), { repositoryId: String(selectedRepository.id), pullNumber: pullRequest.number, stateFilter }) }} aria-pressed={selectedPull?.number === pullRequest.number}>
             <div className="pr-card-meta"><span>#{pullRequest.number}</span><span className={`pr-status-pill ${pullRequest.merged ? 'merged' : pullRequest.state}`}>{getPullRequestStatus(pullRequest)}</span></div><b>{pullRequest.title}</b><small>{pullRequest.author ? `by ${pullRequest.author}` : 'Author unavailable'}</small><div className="pr-card-bottom"><span>{pullRequest.changedFiles === null ? 'Changed files unavailable' : `${pullRequest.changedFiles} changed files`}</span><time>{formatPullRequestDate(pullRequest.updatedAt)}</time></div>
           </button>)}
           {list.status === 'success' && list.hasNext && <div className="pr-load-more"><Button kind="secondary" disabled={list.loadingMore} onClick={list.loadMore}>{list.loadingMore ? 'Loading…' : 'Load more pull requests'}</Button>{list.loadMoreError && <span role="alert">{getPullRequestErrorMessage(list.loadMoreError)} <button onClick={list.loadMore}>Retry</button></span>}</div>}
         </section>
         <section className="panel review-detail pr-detail-panel">
-          {!selectedPull ? <div className="pr-feedback"><Icon name="review" size={22}/><b>Select a pull request</b><span>Its GitHub metadata and changed files will appear here.</span></div> : <PullRequestDetail selectedPull={selectedPull} details={details}/>}
+          {!selectedPull ? <div className="pr-feedback"><Icon name="review" size={22}/><b>Select a pull request</b><span>Its GitHub metadata and changed files will appear here.</span></div> : <PullRequestDetail selectedPull={selectedPull} details={details} repository={selectedRepository}/>}
         </section>
       </div>}
     </section>
@@ -789,8 +805,9 @@ function Reviews({ repositories, repositoryStatus, repositoryError, retryReposit
   </>
 }
 
-function PullRequestDetail({ selectedPull, details }) {
+function PullRequestDetail({ selectedPull, details, repository }) {
   const pullRequest = details.pullRequest || selectedPull
+  const reviewJobs = useCodeReviews(repository, pullRequest)
   return <>
     <div className="review-detail-head"><div><span className="eyebrow">{selectedPull.number ? `#${selectedPull.number}` : ''} · {getPullRequestStatus(pullRequest)}</span><h2>{pullRequest.title}</h2><p>{pullRequest.author ? `Opened by ${pullRequest.author}` : 'Author unavailable'} · Updated {formatPullRequestDate(pullRequest.updatedAt)}</p></div>{pullRequest.url && <a className="quiet-button github-pr-link" href={pullRequest.url} target="_blank" rel="noopener noreferrer">Open on GitHub <Icon name="external" size={13}/></a>}</div>
     {details.detailStatus === 'loading' && <div className="pr-detail-loading" role="status"><i/><i/><i/></div>}
@@ -799,6 +816,7 @@ function PullRequestDetail({ selectedPull, details }) {
       <div className="pr-metadata"><span>{pullRequest.baseBranch || 'base unavailable'} ← {pullRequest.headBranch || 'head unavailable'}</span>{pullRequest.additions !== null && <span className="diff-add-count">+{pullRequest.additions}</span>}{pullRequest.deletions !== null && <span className="diff-remove-count">−{pullRequest.deletions}</span>}{pullRequest.changedFiles !== null && <span>{pullRequest.changedFiles} files changed</span>}</div>
       <div className="pr-description"><h3>Description</h3>{pullRequest.body ? <p>{pullRequest.body}</p> : <span>No description provided.</span>}{pullRequest.bodyTruncated && <small>Description preview was shortened for display.</small>}</div>
     </>}
+    <ReviewJobPanel state={reviewJobs} pullRequest={pullRequest}/>
     <div className="pr-files-heading"><div><h3>Changed files</h3><span>{details.filesStatus === 'success' ? `${details.files.length} shown${details.hasNext ? ' · more available' : ''}` : 'Read-only GitHub diff preview'}</span></div></div>
     {details.filesStatus === 'loading' && <div className="pr-feedback" role="status"><span className="pr-spinner"/>Loading changed files…</div>}
     {details.filesStatus === 'error' && <div className="pr-inline-error" role="alert"><span>{getPullRequestErrorMessage(details.filesError)}</span><Button kind="secondary" onClick={details.retry}>Retry files</Button></div>}
@@ -806,6 +824,30 @@ function PullRequestDetail({ selectedPull, details }) {
     {details.filesStatus === 'success' && details.files.map((file) => <PullRequestFile key={`${file.previousFilename || ''}:${file.filename}`} file={file}/>)}
     {details.filesStatus === 'success' && details.hasNext && <div className="pr-load-more"><Button kind="secondary" disabled={details.loadingMore} onClick={details.loadMoreFiles}>{details.loadingMore ? 'Loading files…' : 'Load more files'}</Button>{details.loadMoreError && <span role="alert">{getPullRequestErrorMessage(details.loadMoreError)} <button onClick={details.loadMoreFiles}>Retry</button></span>}</div>}
   </>
+}
+
+function ReviewJobPanel({ state, pullRequest }) {
+  const newest = state.reviews[0]
+  const eligible = pullRequest.state === 'open' && !state.active
+  const needsExplicitRerun = newest && ['completed', 'failed', 'stale', 'cancelled'].includes(newest.status)
+  return <section className="review-job-panel" aria-label="Internal review job">
+    <div className="review-job-heading"><div><span className="eyebrow">V5.2 REVIEW INFRASTRUCTURE</span><h3>Internal review processing</h3><p>This verifies job handling only. No AI analysis or GitHub action runs.</p></div>
+      <Button kind="secondary" disabled={!eligible || state.submitting || state.status === 'loading'} onClick={() => state.request(Boolean(needsExplicitRerun))}>{state.submitting ? 'Submitting…' : needsExplicitRerun ? 'Request another run' : 'Request review'}</Button>
+    </div>
+    {state.status === 'loading' && <div className="review-job-message" role="status">Loading review history…</div>}
+    {state.status === 'error' && <div className="review-job-message" role="alert">Review history could not be loaded. <button type="button" onClick={state.reload}>Retry</button></div>}
+    {state.actionError && <div className="review-job-message review-job-error" role="alert">{state.actionError.message || 'The review action could not be completed.'}</div>}
+    {state.status === 'success' && state.reviews.length === 0 && <div className="review-job-message">No internal review jobs have been requested for this pull request.</div>}
+    {state.reviews.map((review) => <div className="review-job-row" key={review._id}>
+      <span className={`review-job-status ${review.status}`}>{review.status}</span><span>Revision <code>{String(review.headSha || '').slice(0, 8)}</code></span><time>{formatPullRequestDate(review.createdAt)}</time>
+      {review.status === 'completed' && <p className="review-job-notice">{review.resultNotice || 'Infrastructure processing completed. No AI analysis was performed.'}</p>}
+      {review.failureCode && <p className="review-job-notice">Processing could not complete ({review.failureCode}).</p>}
+      {review.status === 'failed' && <button type="button" onClick={() => state.retry(review._id)} disabled={state.submitting}>Retry</button>}
+      {review.status === 'stale' && <span className="review-job-notice">The pull request changed; request a run for its current revision.</span>}
+      {review.status === 'queued' && <button type="button" onClick={() => state.cancel(review._id)} disabled={state.submitting}>Cancel</button>}
+      {review.status === 'running' && <button type="button" onClick={() => state.cancel(review._id)} disabled={state.submitting}>Request cancellation</button>}
+    </div>)}
+  </section>
 }
 
 function PullRequestFile({ file }) {
@@ -867,17 +909,13 @@ function getSafeGithubUrl(value) {
 }
 
 function App() {
-  const [page,setPage] = useState('landing')
+  const [page,setPage] = useState(() => readPageFromSearch(window.location.search))
   const [selectedRepo,setSelectedRepo] = useState(null)
   const [commitRepositoryId,setCommitRepositoryId] = useState(null)
   const [returnPage,setReturnPage] = useState('overview')
   const { user, status, authMessage, restoreError, storageWarning, logout, retrySession, clearMessages } = useAuth()
   const githubRepositories = useGithubRepositories(status === 'authenticated')
-  const visiblePage = status === 'anonymous' && authMessage
-    ? 'login'
-    : status === 'authenticated' && (page === 'login' || page === 'register')
-      ? returnPage
-      : page
+  const visiblePage = resolveVisiblePage({ page, status, authMessage, returnPage })
   const selectedCommitRepository = githubRepositories.repositories.find((repo) => String(repo.id) === String(commitRepositoryId))
     || githubRepositories.repositories[0]
     || null
@@ -892,20 +930,40 @@ function App() {
     status === 'authenticated' && visiblePage === 'overview' && Boolean(selectedCommitRepository),
     selectedCommitRepository,
   )
-  const workspacePages = ['overview', 'repositories', 'code-reviews', 'analytics', 'settings']
   const navigate=(next)=>{
-    if (workspacePages.includes(next) && status !== 'authenticated') {
-      setReturnPage(next)
-      setPage('login')
-    } else {
-      setPage(next)
-    }
+    const target = resolveNavigationTarget(next, status)
+    const destination = target.page
+    if (target.returnPage) setReturnPage(target.returnPage)
+    setPage(destination)
+    const nextUrl = `${window.location.pathname}${searchWithPage(window.location.search, destination)}${window.location.hash}`
+    window.history.pushState({ page: destination }, '', nextUrl)
     window.scrollTo({top:0,behavior:'smooth'})
   }
+  useEffect(() => {
+    const syncLocation = () => {
+      const requestedPage = readPageFromSearch(window.location.search)
+      if (status !== 'checking' && status !== 'unavailable' && WORKSPACE_PAGES.includes(requestedPage) && status !== 'authenticated') {
+        setReturnPage(requestedPage)
+        setPage('login')
+        const loginUrl = `${window.location.pathname}${searchWithPage(window.location.search, 'login')}${window.location.hash}`
+        window.history.replaceState({ page: 'login' }, '', loginUrl)
+      } else setPage(requestedPage)
+    }
+    window.addEventListener('popstate', syncLocation)
+    return () => window.removeEventListener('popstate', syncLocation)
+  }, [status])
+  useEffect(() => {
+    if (status !== 'anonymous' || !WORKSPACE_PAGES.includes(page)) return
+    if (readPageFromSearch(window.location.search) === 'login') return
+    const loginUrl = `${window.location.pathname}${searchWithPage(window.location.search, 'login')}${window.location.hash}`
+    window.history.replaceState({ page: 'login' }, '', loginUrl)
+  }, [page, status])
   const handleLogout = () => {
     logout()
     setSelectedRepo(null)
     setPage('landing')
+    const landingUrl = `${window.location.pathname}${searchWithPage(window.location.search, 'landing')}${window.location.hash}`
+    window.history.replaceState({ page: 'landing' }, '', landingUrl)
   }
   const openRepository = (repository) => {
     setCommitRepositoryId(repository.id)

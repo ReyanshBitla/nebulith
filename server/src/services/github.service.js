@@ -93,6 +93,8 @@ const mapPullRequest = (pullRequest, { includeBody = false } = {}) => {
     url: safeGithubHtmlUrl(pullRequest.html_url),
     baseBranch: typeof pullRequest.base?.ref === 'string' ? pullRequest.base.ref.slice(0, 255) : null,
     headBranch: typeof pullRequest.head?.ref === 'string' ? pullRequest.head.ref.slice(0, 255) : null,
+    baseSha: typeof pullRequest.base?.sha === 'string' && COMMIT_SHA_PATTERN.test(pullRequest.base.sha) ? pullRequest.base.sha : null,
+    headSha: typeof pullRequest.head?.sha === 'string' && COMMIT_SHA_PATTERN.test(pullRequest.head.sha) ? pullRequest.head.sha : null,
     additions: safeIntegerOrNull(pullRequest.additions),
     deletions: safeIntegerOrNull(pullRequest.deletions),
     changedFiles: safeIntegerOrNull(pullRequest.changed_files),
@@ -522,6 +524,25 @@ const createGithubService = ({
     });
   };
 
+  const getPullRequestForReview = async (userId, owner, repositoryName, pullNumber) => {
+    validateRepositoryCoordinates(owner, repositoryName);
+    validatePullRequestNumber(pullNumber);
+    const integration = await getInstallationForUser(userId);
+    return withInstallationToken(integration.installationId, async (token) => {
+      const repository = await assertInstallationRepository(token, owner, repositoryName);
+      const pullRequest = await requestGithubApi({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryName)}/pulls/${pullNumber}`,
+        token,
+        fetchImpl,
+      });
+      const mapped = mapPullRequest(pullRequest);
+      if (!mapped.baseSha || !mapped.headSha) {
+        throw createHttpError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub did not provide pull request revision metadata.');
+      }
+      return { repositoryId: String(repository.id), repositoryFullName: repository.full_name, pullRequest: mapped };
+    });
+  };
+
   const listPullRequestFiles = async (userId, owner, repositoryName, pullNumber, { page = 1, perPage = 20 } = {}) => {
     validateRepositoryCoordinates(owner, repositoryName);
     validatePullRequestNumber(pullNumber);
@@ -803,6 +824,7 @@ const createGithubService = ({
     listRepositories,
     listPullRequests,
     getPullRequest,
+    getPullRequestForReview,
     listPullRequestFiles,
     listCommits,
     getCommitDetails,

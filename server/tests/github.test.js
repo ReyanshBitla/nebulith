@@ -1397,7 +1397,7 @@ test('pull request endpoints require authentication, validate filters and pagina
     assert.equal(detailBody.data.pullRequest.body, 'Plain text PR description');
     assert.equal(detailBody.data.pullRequest.merged, true);
     assert.equal(detailBody.data.pullRequest.headBranch, 'feature/session');
-    assert.equal('headSha' in detailBody.data.pullRequest, false);
+    assert.equal('headSha' in detailBody.data.pullRequest, true);
 
     const filesResponse = await fetch(`${baseUrl}/pulls/7/files?page=1&per_page=3`, { headers });
     const filesBody = await filesResponse.json();
@@ -1480,6 +1480,33 @@ test('pull request GitHub rate limits return a safe retry response', async () =>
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+});
+
+test('review revision metadata is fetched through the connected installation after repository access validation', async () => {
+  const requestedPaths = [];
+  const fixture = makeConnectedFixture({
+    fetchImpl: async (url) => {
+      const path = new URL(url).pathname;
+      requestedPaths.push(path);
+      if (path === '/repos/nebulith/neb-public') {
+        return new Response(JSON.stringify(createRepo()), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (path === '/repos/nebulith/neb-public/pulls/17') {
+        return new Response(JSON.stringify({
+          number: 17, title: 'A reviewable change', state: 'open',
+          base: { ref: 'main', sha: 'a'.repeat(40) },
+          head: { ref: 'topic', sha: 'b'.repeat(40) },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const result = await fixture.service.getPullRequestForReview(USER_ID, 'nebulith', 'neb-public', 17);
+  assert.equal(result.repositoryId, '7');
+  assert.equal(result.pullRequest.baseSha, 'a'.repeat(40));
+  assert.equal(result.pullRequest.headSha, 'b'.repeat(40));
+  assert.deepEqual(requestedPaths, ['/repos/nebulith/neb-public', '/repos/nebulith/neb-public/pulls/17']);
+  assert.equal(fixture.appService.revokedInstallationTokens.length, 1);
 });
 
 test('GitHub API response limits stop oversized file payloads before parsing the full body', async () => {

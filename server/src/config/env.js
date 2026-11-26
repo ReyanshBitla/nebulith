@@ -74,7 +74,20 @@ const loadEnvConfig = (source = process.env) => {
     }
   }
 
-  return { port, nodeEnv, mongodbUri, frontendUrl, jwtSecret, jwtExpiresIn };
+  const boundedInteger = (key, fallback, min, max) => {
+    const value = source[key] === undefined ? fallback : Number(source[key]);
+    if (!Number.isInteger(value) || value < min || value > max) {
+      throw new Error(`Invalid ${key}. Set it to a number between ${min} and ${max}.`);
+    }
+    return value;
+  };
+  const reviewWorkerPollIntervalMs = boundedInteger('REVIEW_WORKER_POLL_INTERVAL_MS', 1000, 250, 60000);
+  const reviewWorkerConcurrency = boundedInteger('REVIEW_WORKER_CONCURRENCY', 2, 1, 8);
+  const reviewWorkerLeaseMs = boundedInteger('REVIEW_WORKER_LEASE_MS', 60000, 5000, 3600000);
+  const reviewMaxAttempts = boundedInteger('REVIEW_MAX_ATTEMPTS', 3, 1, 5);
+
+  return { port, nodeEnv, mongodbUri, frontendUrl, jwtSecret, jwtExpiresIn,
+    reviewWorkerPollIntervalMs, reviewWorkerConcurrency, reviewWorkerLeaseMs, reviewMaxAttempts };
 };
 
 module.exports = { loadEnvConfig };
